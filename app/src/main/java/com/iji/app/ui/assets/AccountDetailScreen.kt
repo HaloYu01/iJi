@@ -1,0 +1,429 @@
+package com.iji.app.ui.assets
+
+import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.iji.app.ui.components.menu.AnchoredIconDropdownMenu
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.iji.app.MainViewModel
+import com.iji.app.data.model.Transaction
+import com.iji.app.data.model.TransactionType
+import com.iji.app.data.repository.CategoryCatalog
+import com.iji.app.ui.add.AddTransactionSheet
+import com.iji.app.ui.components.ContentState
+import com.iji.app.ui.components.IjiTextAction
+import com.iji.app.ui.components.LocalSnackbarController
+import com.iji.app.ui.components.StateView
+import com.iji.app.ui.components.TransactionRow
+import com.iji.app.ui.components.formatMoney
+import com.iji.app.ui.components.ijiButtonFocusRing
+import com.iji.app.ui.theme.LocalDimens
+import com.iji.app.ui.theme.MiuixPrimary
+import com.iji.app.ui.theme.Radius
+import com.iji.app.ui.theme.TextSecondary
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import com.kyant.capsule.ContinuousRoundedRectangle
+import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import java.time.LocalDate
+
+/**
+ * 账户详情页：当前余额 + 最近交易记录 + 新增一笔交易 + 导出 / 编辑账户。
+ * 顶栏右上角点状菜单提供「编辑账户」「导出 CSV」。
+ */
+@Composable
+fun AccountDetailScreen(
+    accountId: Long,
+    onBack: () -> Unit = {},
+    onNavigateEdit: (Long) -> Unit = {},
+    /** 进入对账页，并把本账户预选为作用域 */
+    onNavigateReconcile: (String) -> Unit = {},
+    app: MainViewModel = viewModel(),
+    viewModel: AssetsViewModel = viewModel(
+        factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = AssetsViewModel(app) as T
+        },
+    ),
+) {
+    val context = LocalContext.current
+    val snackbar = LocalSnackbarController.current
+    val accounts by app.accounts.collectAsStateWithLifecycle()
+    val accountsReady by app.accountsReady.collectAsStateWithLifecycle()
+    val transactions by app.transactions.collectAsStateWithLifecycle()
+    val transactionsReady by app.transactionsReady.collectAsStateWithLifecycle()
+
+    val account = accounts.find { it.id == accountId }
+    val accountTxs = remember(transactions, account) {
+        if (account == null) {
+            emptyList()
+        } else {
+            // 组合付款要归入**每个**参与账户，否则只会在首选账户下出现，
+            // 另一个账户的流水看起来凭空少了一笔
+            transactions.filter { tx ->
+                tx.account == account.name || tx.splits.any { it.account == account.name }
+            }.sortedByDescending { it.id }
+        }
+    }
+
+    /**
+     * 本账户在这笔账里实际承担的分额（分）。
+     * 非组合付款即整笔金额；组合付款取本账户那条拆分，取不到时退化为整笔（不应发生）。
+     */
+    fun accountShareCents(tx: Transaction): Long {
+        val name = account?.name ?: return tx.amountCents
+        if (tx.splits.isEmpty()) return tx.amountCents
+        return tx.splits.firstOrNull { it.account == name }?.amountCents ?: tx.amountCents
+    }
+
+    // 本月流入 / 流出（按本账户分担额算；转账不计入收支，与资产页口径一致）
+    val thisMonth = remember { LocalDate.now() }
+    val monthInCents = remember(accountTxs, thisMonth) {
+        accountTxs.filter {
+            it.type == TransactionType.INCOME &&
+                it.date.year == thisMonth.year && it.date.month == thisMonth.month
+        }.sumOf { accountShareCents(it) }
+    }
+    val monthOutCents = remember(accountTxs, thisMonth) {
+        accountTxs.filter {
+            it.type == TransactionType.EXPENSE &&
+                it.date.year == thisMonth.year && it.date.month == thisMonth.month
+        }.sumOf { accountShareCents(it) }
+    }
+
+    var menuOpen by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
+    // 交易分页：原先直接 take(50) 静默截断，用户会以为只有 50 笔
+    var visibleCount by remember(accountId) { mutableStateOf(DETAIL_PAGE_SIZE) }
+    // 附件查看器：账单 + 从第几张开始看
+    var viewingAttachments by remember { mutableStateOf<Pair<Transaction, Int>?>(null) }
+
+    // 导出该账户全部交易为 CSV（保存位置由系统选择器决定）
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        uri?.let {
+            try {
+                // 组合付款按本账户分担额导出，否则导出的金额与本账户实际流水对不上
+                val csv = app.backupRepository.toCsv(
+                    accountTxs.map { tx ->
+                        val share = accountShareCents(tx)
+                        if (tx.splits.size > 1 && share != tx.amountCents) {
+                            tx.copy(amountCents = share)
+                        } else {
+                            tx
+                        }
+                    },
+                    currencyCode = com.iji.app.data.model.CurrencyDisplay.current.code,
+                )
+                context.contentResolver.openOutputStream(it)?.use { stream ->
+                    stream.write(csv.toByteArray())
+                }
+                snackbar.show("已导出 ${accountTxs.size} 条交易")
+            } catch (e: Exception) {
+                snackbar.show("导出失败：${e.message}")
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // 顶栏：返回 + 居中标题（账户名）+ 右上角点状菜单
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { onBack() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    MiuixIcons.ChevronBackward,
+                    contentDescription = "返回",
+                    tint = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Text(
+                    account?.name ?: "账户",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            AnchoredIconDropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+                modifier = Modifier.size(48.dp),
+                // 每次重组直接构建（不缓存）：保证 onClick 捕获最新的 account / accountTxs
+                items = listOf(
+                    DropdownItem(
+                        text = "编辑账户",
+                        onClick = { account?.let { onNavigateEdit(it.id) } },
+                    ),
+                    DropdownItem(
+                        text = "导出 CSV",
+                        onClick = {
+                            if (accountTxs.isEmpty()) {
+                                snackbar.show("该账户暂无交易可导出")
+                            } else {
+                                exportLauncher.launch("${account?.name ?: "账户"}_交易.csv")
+                            }
+                        },
+                    ),
+                ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .clickable { menuOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ThreeDotsIcon(tint = MaterialTheme.colorScheme.onBackground)
+                }
+            }
+        }
+
+        // 首帧账户列表还没读出来时先给加载态，否则会误报「账户不存在」
+        if (!accountsReady) {
+            StateView(state = ContentState.Loading("加载中"), areaVerticalPadding = 48.dp)
+            return@Column
+        }
+        if (account == null) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                StateView(state = ContentState.Empty("账户不存在或已被删除"), areaVerticalPadding = 8.dp)
+                IjiTextAction(text = "返回资产", onClick = onBack)
+            }
+            return@Column
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(
+                horizontal = LocalDimens.current.screenPadding,
+                vertical = 12.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // 当前余额卡
+            item(key = "balance") {
+                top.yukonga.miuix.kmp.basic.Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = Radius.sheet,
+                    colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(
+                        MaterialTheme.colorScheme.surface,
+                    ),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                        Text("当前余额", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            formatMoney(account.balanceCents),
+                            style = MaterialTheme.typography.displaySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (account.includeInNetWorth) "计入净资产" else "不计入净资产",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Row(Modifier.fillMaxWidth()) {
+                            MetricCell("本月流入", monthInCents, Modifier.weight(1f))
+                            MetricCell("本月流出", monthOutCents, Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
+            // 新增一笔交易（高频动作排在对账之前）
+            item(key = "add") {
+                Button(
+                    onClick = { showAdd = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .ijiButtonFocusRing(shape = ContinuousRoundedRectangle(ButtonDefaults.CornerRadius)),
+                ) {
+                    Text("＋ 新增一笔交易", fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // 对账入口：reconciled 字段很早就有，但只能逐笔进编辑面板勾选，
+            // 没有集中核对的出口 → 这里给一个带待对账笔数的入口（低频，排在高频动作之后）
+            item(key = "reconcile") {
+                val unreconciled = remember(accountTxs) { accountTxs.count { !it.reconciled } }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.sheet))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { account?.let { onNavigateReconcile(it.name) } }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "对账",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            if (unreconciled == 0) "全部账单都已对账" else "$unreconciled 笔未对账",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (unreconciled == 0) TextSecondary else MiuixPrimary,
+                        )
+                    }
+                    Icon(
+                        MiuixIcons.ChevronForward,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+
+            // 最近交易
+            item(key = "recent-title") {
+                Text(
+                    if (transactionsReady) "最近交易（${accountTxs.size}）" else "最近交易",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            if (!transactionsReady) {
+                item(key = "recent-loading") {
+                    StateView(state = ContentState.Loading("加载中"), areaVerticalPadding = 20.dp)
+                }
+            } else if (accountTxs.isEmpty()) {
+                item(key = "recent-empty") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        StateView(
+                            state = ContentState.Empty("这个账户还没有交易"),
+                            areaVerticalPadding = 20.dp,
+                        )
+                        IjiTextAction(
+                            text = "记一笔",
+                            onClick = { showAdd = true },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            } else {
+                items(accountTxs.take(visibleCount), key = { it.id }) { tx ->
+                    TransactionRow(
+                        tx = tx,
+                        subtitle = runCatching { CategoryCatalog.of(tx.categoryId).name }
+                            .getOrDefault(tx.categoryId),
+                        // 只显示本账户分担额；整额的话两个账户的流水加起来会翻倍
+                        amountOverrideCents = if (tx.splits.size > 1) accountShareCents(tx) else null,
+                        onOpenAttachments = if (tx.attachments.isNotEmpty()) {
+                            { index -> viewingAttachments = tx to index }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+
+            if (accountTxs.size > visibleCount) {
+                item(key = "load-more") {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        IjiTextAction(
+                            text = "加载更多（还有 ${accountTxs.size - visibleCount} 条）",
+                            onClick = { visibleCount += DETAIL_PAGE_SIZE },
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+
+    AddTransactionSheet(
+        show = showAdd,
+        onDismiss = { showAdd = false },
+        prefillAccount = account?.name,
+    )
+
+    val viewing = viewingAttachments
+    com.iji.app.ui.components.AttachmentViewerDialog(
+        show = viewing != null,
+        attachments = viewing?.first?.attachments.orEmpty(),
+        startIndex = viewing?.second ?: 0,
+        onDismissRequest = { viewingAttachments = null },
+    )
+}
+
+/** 账户详情首屏交易条数；每次「加载更多」再追加同样条数 */
+private const val DETAIL_PAGE_SIZE = 30
+
+/** Miuix 风格点状图标：三个横向小圆点 */
+@Composable
+private fun ThreeDotsIcon(
+    modifier: Modifier = Modifier,
+    tint: Color = TextSecondary,
+) {
+    Row(
+        modifier = modifier.size(20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
+    ) {
+        repeat(3) {
+            Box(modifier = Modifier.size(3.dp).background(tint, CircleShape))
+        }
+    }
+}

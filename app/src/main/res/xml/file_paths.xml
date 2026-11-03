@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 路径白名单：拍照识别小票时把临时图片 URI 授权给系统相机 App 写入。
+    只用 cache 目录，不暴露私有数据区；拍完即解析，不长期留存原图。
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="camera" path="camera/" />
+</paths>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知小图标（状态栏/实况芯片）：白色字母 i 剪影。
+     造型与启动图标前景（drawable/ic_launcher_foreground.xml：圆点 + 圆角竖杆）同源，
+     但按 24dp 视口重排——启动图标是 108dp 自适应层，字母只占中央约 40%，
+     直接拿来做 smallIcon 缩到 24dp 后几乎看不见，故此图标把字母等比放大铺满安全区。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 圆点（对应前景层 r7/108dp → r2.35/24dp） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,5.5 m-2.35,0 a2.35,2.35 0 1,1 4.7,0 a2.35,2.35 0 1,1 -4.7,0" />
+
+    <!-- 圆角竖杆（对应前景层 19x30/108dp → 6.3x10/24dp，四角 r1.3） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10.15,10.9 h3.7 a1.3,1.3 0 0 1 1.3,1.3 v7.4 a1.3,1.3 0 0 1 -1.3,1.3 h-3.7 a1.3,1.3 0 0 1 -1.3,-1.3 v-7.4 a1.3,1.3 0 0 1 1.3,-1.3 z" />
+</vector>

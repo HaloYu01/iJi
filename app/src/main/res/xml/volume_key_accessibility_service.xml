@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    音量键识屏记账：只作为「音量键快捷键」的启动入口。
+
+    权限范围刻意收窄：
+    - 不接收任何实际事件（typeWindowStateChanged 仅占位，满足系统校验）；
+    - canRetrieveWindowContent=false：不读界面内容；
+    - canTakeScreenshot=false：截屏由 Shizuku 或「支付通知」那个
+      canTakeScreenshot=true 的服务完成，这里不申请多余能力。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/volume_key_accessibility_desc"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false"
+    android:canTakeScreenshot="false"
+    android:accessibilityFlags="flagDefault"
+    android:summary="@string/volume_key_accessibility_label" />

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- i记 品牌红，与 App 内主题色一致 -->
+    <color name="ic_launcher_background">#FA5151</color>
+</resources>

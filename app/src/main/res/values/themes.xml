@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纯 Compose 工程，XML 主题只做最小配置 -->
+    <style name="Theme.IJi" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

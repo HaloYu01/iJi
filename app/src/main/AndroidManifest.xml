@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 应用锁指纹解锁：改用平台 android.hardware.biometrics.BiometricPrompt 后，
+         该权限不再由 androidx.biometric 的 manifest 合并进来，需自行声明。 -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- 预算超支提醒（Android 13+ 需运行时授权；未授权时 NotificationHelper 静默跳过） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 原生实况通知（Android 16 promoted ongoing / Live Updates）：不声明此权限，
+         系统会静默忽略 requestPromotedOngoing 只发普通通知（HyperOS 3 超级岛同理） -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- 语音记账：Android 语音识别由系统弹窗完成，但仍需声明录音权限（否则识别直接失败） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 拍照识别小票：调用系统相机，不申请 CAMERA 权限（由相机 App 自己持有） -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Shizuku：向 Shizuku 管理器申请授权（授权由用户在 Shizuku 里确认） -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <!-- 识屏结果悬浮窗确认：需用户在系统设置里授予「显示在其他应用上层」 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 权限检验页：跳转「忽略电池优化」直接申请弹窗（ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+         的前置声明；未声明时 startActivity 直接抛 SecurityException） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CREATE_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <!-- 未加这条时 getPackageInfo / getLaunchIntentForPackage 查不到 Shizuku（包可见性限制） -->
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
+
+    <application
+        android:name=".IjiApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.IJi">
+
+        <!--
+            windowSoftInputMode="adjustResize" 必须显式声明：
+            不声明时（adjustUnspecified）系统会解析成 adjust=pan（窗口内没有可滚动的框架视图），
+            键盘弹出时系统平移整个 Activity 窗口 —— 而 Miuix 的弹窗（DialogLayout）是画在
+            同一窗口内的组合层，于是「页面和弹窗一起上移」。
+            adjustResize + setDecorFitsSystemWindows(false)（enableEdgeToEdge 已设）下，
+            系统不再平移窗口，而是把 IME inset 下发给应用，由 Compose 的 imePadding()
+            只把弹窗顶到键盘之上（见 DialogContentLayout 的 defaultWindowInsetsPadding）。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.IJi"
+            android:enableOnBackInvokedCallback="true">
+            <!--
+                enableOnBackInvokedCallback="true"：把应用接入系统 OnBackInvoked 返回管线。
+                没有它，系统不会向应用下发返回手势事件（包括预测性返回的进度 BackEvent），
+                GlassDialog 的预测性返回跟手动画（受偏好设置「预测性返回动画」开关控制）
+                收不到任何进度，开关形同虚设。targetSdk 36 在 Android 16 上默认开启，
+                但 Android 14/15 上仍需显式声明，这里统一声明。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 拍照识别小票：把 cache 目录下的临时图片授权给系统相机写入 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 支付通知自动记账：只监听通知栏文本变化，不模拟点击 -->
+        <service
+            android:name=".accessibility.PaymentNotifyAccessibilityService"
+            android:exported="false"
+            android:label="@string/accessibility_payment_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- 音量键快捷识屏：由系统「无障碍 → 音量键快捷键」按需启动，截完即 disableSelf -->
+        <service
+            android:name=".accessibility.VolumeKeyCaptureService"
+            android:exported="false"
+            android:label="@string/volume_key_accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/volume_key_accessibility_service" />
+        </service>
+
+        <!-- 通知动作（记一笔 / 忽略）的接收端；应用进程被杀时也能收到 -->
+        <receiver
+            android:name=".accessibility.PaymentActionReceiver"
+            android:exported="false" />
+
+        <!--
+            Shizuku 授权握手入口。Shizuku 客户端库靠这个 provider 与 Shizuku 服务端通信，
+            exported=true 但加了系统级权限，其他应用无法调用。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Shizuku UserService：由 Shizuku 以 shell 身份拉起，跑我们的 screencap -->
+        <service
+            android:name=".shizuku.ShizukuShellService"
+            android:exported="false" />
+
+        <!-- 下拉快捷开关「识屏记账」：在任意应用的账单页下拉点击即可截屏识别 -->
+        <service
+            android:name=".shizuku.ScreenCaptureTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_scan"
+            android:label="@string/tile_scan_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>
