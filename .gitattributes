@@ -1,0 +1,11 @@
+# 统一换行符，避免 Windows 提交 / Linux 克隆后 gradlew 报 "bad interpreter"
+* text=auto eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+
+# 二进制：不要让 git 试图合并或转换
+*.jar binary
+*.png binary
+*.webp binary
+*.ttf binary
+*.otf binary
