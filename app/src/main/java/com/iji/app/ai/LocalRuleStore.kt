@@ -86,6 +86,41 @@ object LocalRuleStore {
         save(context, restored)
     }
 
+    /**
+     * 按给定 id 顺序重排（拖拽排序落盘）。顺序即并列命中时的优先级（引擎最后一条排序依据）。
+     * [orderedIds] 里没有的规则按原相对顺序追加在后，不丢数据；顺序没变返回 false。
+     */
+    fun reorder(context: Context, orderedIds: List<String>): Boolean = synchronized(this) {
+        val byId = cache.associateBy { it.id }
+        val known = orderedIds.toSet()
+        val ordered = orderedIds.mapNotNull { byId[it] } + cache.filter { it.id !in known }
+        if (ordered == cache) return false
+        save(context, ordered)
+    }
+
+    /**
+     * 「记住分类」落规则（AutoAccounting 的自动记忆）：把清洗后的备注关键词与用户
+     * 选定的分类存成一条 [LocalRule.auto] 规则；同关键词的自动规则**覆盖更新**（换分类
+     * 就是改主意），没有则新增。关键词空白返回 false（调用方静默跳过即可）。
+     */
+    fun rememberCategory(context: Context, keyword: String, category: String, type: String): Boolean =
+        synchronized(this) {
+            val kw = keyword.trim()
+            if (kw.isEmpty()) return false
+            val existing = cache.firstOrNull { it.auto && it.keywords == listOf(kw) }
+            val rule = LocalRule(
+                id = existing?.id ?: newRuleId(),
+                name = "自动 · $category",
+                type = type,
+                category = category,
+                keywords = listOf(kw),
+                enabled = true,
+                builtin = false,
+                auto = true,
+            )
+            upsert(context, rule)
+        }
+
     /** 导出（JSON 文本）；给「导出规则」用 */
     fun exportJson(context: Context): String = rulesToJson(rules(context))
 
@@ -117,10 +152,10 @@ object LocalRuleStore {
         context.applicationContext.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 }
 
-/** 规则包 JSON 版本号：字段改名时靠它决定是否迁移 */
-internal const val LOCAL_RULE_SCHEMA = 1
+/** 规则包 JSON 版本号：字段改名时靠它决定是否迁移；v2 增加 moneyMin/moneyMax/regex/auto */
+internal const val LOCAL_RULE_SCHEMA = 2
 
-/** 规则列表 → JSON（纯函数，可单测） */
+/** 规则列表 → JSON */
 internal fun rulesToJson(rules: List<LocalRule>): String {
     val arr = JSONArray()
     rules.forEach { rule ->
@@ -134,6 +169,10 @@ internal fun rulesToJson(rules: List<LocalRule>): String {
                 put("keywords", JSONArray(rule.keywords))
                 put("enabled", rule.enabled)
                 put("builtin", rule.builtin)
+                rule.moneyMin?.let { put("moneyMin", it) }
+                rule.moneyMax?.let { put("moneyMax", it) }
+                put("regex", rule.regex)
+                put("auto", rule.auto)
             },
         )
     }
@@ -144,7 +183,7 @@ internal fun rulesToJson(rules: List<LocalRule>): String {
 }
 
 /**
- * JSON → 规则列表（纯函数，可单测）。
+ * JSON → 规则列表。
  *
  * 容错：字段缺失走默认值、类型不认识按支出处理、关键词为空跳过、整段不是 JSON 就当空列表 ——
  * 手改文件 / 导入了别的 JSON 不该让 App 崩，界面据「空列表」提示格式不对。
@@ -179,6 +218,11 @@ private fun parseRules(raw: String): List<LocalRule> {
             keywords = keywords,
             enabled = o.optBoolean("enabled", true),
             builtin = o.optBoolean("builtin", false),
+            // optDouble 用 NaN 当「缺失」哨兵：v1 的老导出文件没有这几个字段也能读
+            moneyMin = o.optDouble("moneyMin", Double.NaN).takeIf { !it.isNaN() },
+            moneyMax = o.optDouble("moneyMax", Double.NaN).takeIf { !it.isNaN() },
+            regex = o.optBoolean("regex", false),
+            auto = o.optBoolean("auto", false),
         )
     }
 }

@@ -54,17 +54,20 @@ import com.iji.app.accessibility.PaymentAccessibilityStatus
 import com.iji.app.accessibility.PaymentNotifyAccessibilityService
 import com.iji.app.accessibility.ScreenCaptureFlow
 import com.iji.app.ai.BillDraft
-import com.iji.app.ai.ScreenshotBillParser
+import com.iji.app.ai.ImageBillRecognizer
+import com.iji.app.ai.TempImages
 import com.iji.app.ai.applyExifRotation
 import com.iji.app.ai.markDuplicates
 import com.iji.app.data.model.Accounts
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
+import com.iji.app.ui.components.IjiPrimaryButtonBlue
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.findActivity
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.theme.AppleOrange
 import com.iji.app.ui.theme.DividerGray
+import com.iji.app.ui.theme.ExpenseAmount
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
@@ -78,6 +81,7 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import java.io.File
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 截屏导入：把支付宝 / 微信**账单列表页**的整屏截图识别成多笔账单。
@@ -92,7 +96,7 @@ import java.io.File
 @Composable
 fun ScreenshotImportScreen(
     onBack: () -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -129,14 +133,17 @@ fun ScreenshotImportScreen(
     }
 
     /** 取图 → 识别 → 判重，产出预览草稿 */
-    fun recognize(uri: Uri) {
+    fun recognize(uri: Uri, tempFile: File? = null) {
         scope.launch {
             recognizing = true
             val bmp = withContext(Dispatchers.IO) {
-                runCatching {
+                val decoded = runCatching {
                     context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                }.getOrNull()
-            }?.let { applyExifRotation(context, uri, it) }
+                }.getOrNull()?.let { applyExifRotation(context, uri, it) }
+                // 位图（含 EXIF 修正）已经在内存里了，拍照产生的临时文件立刻删
+                TempImages.delete(tempFile)
+                decoded
+            }
 
             if (bmp == null) {
                 recognizing = false
@@ -144,11 +151,16 @@ fun ScreenshotImportScreen(
                 return@launch
             }
 
-            val found = withContext(Dispatchers.Default) {
-                ScreenshotBillParser.recognizeDrafts(bmp)
+            // 后台自动识屏 ScreenCaptureFlow 刻意不走它：无感场景不发网、图不出设备。
+            val outcome = withContext(Dispatchers.Default) {
+                ImageBillRecognizer.recognizeDrafts(context, bmp)
             }
             recognizing = false
-            applyFound(found)
+            if (outcome.drafts.isEmpty()) {
+                snackbar.show(outcome.hint ?: "没有从这张图里识别出账单，请确认截的是账单列表页")
+            } else {
+                applyFound(outcome.drafts)
+            }
         }
     }
 
@@ -203,9 +215,19 @@ fun ScreenshotImportScreen(
 
     // 拍照用的临时文件走 FileProvider；路径必须是 file_paths.xml 白名单内的 cache/camera
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    /** 相机写进 cache 的原图，识别完立刻删（识别失败也删，留着只会占缓存） */
+    var cameraFile by remember { mutableStateOf<File?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture(),
-    ) { ok -> if (ok) cameraUri?.let { recognize(it) } }
+    ) { ok ->
+        val uri = cameraUri
+        val shot = cameraFile
+        if (!ok || uri == null) {
+            TempImages.delete(shot)
+            return@rememberLauncherForActivityResult
+        }
+        recognize(uri, tempFile = shot)
+    }
 
     fun launchCamera() {
         val dir = File(context.cacheDir, "camera").apply { mkdirs() }
@@ -214,17 +236,25 @@ fun ScreenshotImportScreen(
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         }.getOrNull()
         if (uri == null) {
+            TempImages.delete(file)
             snackbar.show("无法创建拍照文件")
             return
         }
         cameraUri = uri
+        cameraFile = file
         cameraLauncher.launch(uri)
+    }
+
+    // 兜底清理：上次取消拍照 / 进程被杀留下的 cache/camera 图片
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            TempImages.sweep(File(context.cacheDir, "camera"))
+        }
     }
 
     val selectedCount = drafts.count { it.selected }
     val dupCount = drafts.count { it.duplicateOfId != null }
 
-    // P0：手搓顶栏 → 统一改用 MineSubPage。
     // 顶栏是浮层，用 Spacer 让出「安全区 + 52dp 折叠态」；三个 pane 自带 fillMaxSize，
     // 会自动占满顶栏下方的剩余高度，无需改动 pane 内部。
     MineSubPage(title = "截屏导入", onBack = onBack) {
@@ -578,7 +608,8 @@ private fun DraftRow(
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.SemiBold,
             color = when (draft.type) {
-                TransactionType.EXPENSE -> MaterialTheme.colorScheme.onSurface
+                // 全局约定：消费红 / 收入绿
+                TransactionType.EXPENSE -> ExpenseAmount
                 TransactionType.INCOME -> IncomeGreen
                 TransactionType.TRANSFER -> TextSecondary
             },
@@ -640,7 +671,7 @@ private fun BigAction(
             .background(
                 when {
                     !enabled -> DividerGray
-                    primary -> MiuixPrimary
+                    primary -> IjiPrimaryButtonBlue
                     else -> DividerGray
                 },
             )

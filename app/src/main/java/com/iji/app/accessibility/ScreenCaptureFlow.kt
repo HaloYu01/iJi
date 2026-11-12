@@ -1,16 +1,23 @@
 package com.iji.app.accessibility
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.util.Log
 import com.iji.app.ai.BillDraft
 import com.iji.app.ai.ScreenshotBillParser
 import com.iji.app.budget.NotificationHelper
+import com.iji.app.capture.ForegroundAppResolver
 import com.iji.app.data.db.DbProvider
 import com.iji.app.data.repository.LedgerSelection
 import com.iji.app.shizuku.ShizukuBridge
+import com.iji.app.data.model.TransactionType
+import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.shizuku.ShizukuState
 import com.iji.app.ui.Routes
+import com.iji.app.ui.components.categoryNotificationBitmap
+import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.overlay.BillOverlay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
@@ -42,10 +49,19 @@ object ScreenCaptureFlow {
     /** 默认倒计时：够切到另一个 App 的账单页，又不至于让人干等 */
     const val DEFAULT_DELAY_MS = 3_000L
 
-    /** Shizuku 版：从磁贴/后台触发时人已经在账单页上了，只留一点收起通知栏的余量 */
-    const val SHIZUKU_DELAY_MS = 900L
+    /**
+     * Shizuku 版：从磁贴/后台触发时人已经在账单页上了。
+     *
+     * 这个间隔就是「收起下拉栏 → 露出屏幕」的展示窗口：系统收栏动画约 300ms，
+     * 留 500ms 总量（收栏 300 + 200ms 渲染余量），比旧版 900ms 少近一半干等——
+     * 再短就会把半收起状态截进去，反而要重试。
+     */
+    const val SHIZUKU_DELAY_MS = 500L
 
     private const val TAG = "ScreenCaptureFlow"
+
+    /** 岛按钮「确认记账」广播 PendingIntent 的请求码（与结果通知 9102 分开） */
+    private const val SCREENSHOT_CONFIRM_REQUEST_CODE = 9103
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -109,6 +125,13 @@ object ScreenCaptureFlow {
         val appContext = context.applicationContext
         _capturing.value = true
         scope.launch {
+            // 磁贴触发时先收起下拉栏：岛（通知）在下拉栏盖着时看不见，先退出下拉栏
+            // 露出屏幕，岛才能浮出来；非磁贴路径（应用内触发）没有栏可收，直接跳过。
+            try {
+                if (collapseShade) ShizukuBridge.exec(appContext, "cmd statusbar collapse")
+            } catch (t: Throwable) {
+                Log.w(TAG, "收起下拉栏失败，继续截屏", t)
+            }
             // 从这一刻起用户就切到账单页了：界面上看不到任何东西，先上一条进行中的岛。
             // 返回 false 表示这台机器上岛不了（非小米 / 关了开关 / 没通知权限），
             // 后续就不再白刷文案。
@@ -118,8 +141,11 @@ object ScreenCaptureFlow {
                 "马上自动截屏，请把账单页露出来",
             )
             try {
-                if (collapseShade) ShizukuBridge.exec(appContext, "cmd statusbar collapse")
+                // 露出屏幕的展示窗口（收栏动画 + 渲染），到点即截
                 delay(delayMillis)
+                // 与截图贴在同一时刻取前台包名：倒计时结束后用户已切到账单页，
+                // 晚了可能又切走，来源就对不上了。取不到一律降级为 null，识别照常走。
+                val foregroundPkg = ForegroundAppResolver.current(appContext)
                 val bmp = capture()
                 if (bmp == null) {
                     report(appContext, "截屏失败", "没能取到屏幕画面（授权可能已失效，或系统拒绝），可改用相册选图")
@@ -133,7 +159,10 @@ object ScreenCaptureFlow {
                         "已截屏，正在分析账单",
                     )
                 }
-                val found = ScreenshotBillParser.recognizeDrafts(bmp)
+                val found = ScreenshotBillParser.recognizeDrafts(bmp, sourcePkg = foregroundPkg)
+                // 能确认来源才在结果里说一句，认不出就不提，避免给用户错误暗示
+                val sourceHint = ForegroundAppResolver.accountFor(foregroundPkg)
+                    ?.let { " · 来自 $it" } ?: ""
                 if (found.isEmpty()) {
                     report(appContext, "没识别出账单", "这一屏里没找到账单明细，请确认截的是账单列表页")
                     return@launch
@@ -143,37 +172,87 @@ object ScreenCaptureFlow {
 
                 when (CapturePreferences.overlayStyle(appContext)) {
                     CapturePreferences.OVERLAY_ISLAND -> {
-                        // 通知模式：不弹卡片（不可编辑），以超级岛焦点通知提醒；
-                        // 草稿照旧挂进流程，点通知回应用后仍可在识屏导入页核对。
+                        // 通知模式：不弹卡片（不可编辑），以超级岛**大岛**提醒；
+                        // 展开卡带「确认记账」按钮，点击直接入账（BillConfirmReceiver），
+                        // 点卡片本体仍回应用进导入页逐笔核对。
                         // forceIsland = true：用户明确选了这一种呈现方式，就按它发
                         // （以前这里借的是「记账提醒」的岛 id，会和当天的记账提醒互相顶掉）
                         _drafts.value = found
+                        // 大岛布局按信息层级分配（保证可读性）：
+                        // - 展开卡主体：逐笔明细，每行「类型 金额 分类 · 备注」；
+                        //   备注截 8 字防换行溢出，最多 3 行，多出的折叠为「…共 N 笔」
+                        // - 大岛头部 / 底栏：笔数摘要「共 N 笔 · 待确认」——
+                        //   不再复读标题（旧版底栏又显示一遍「截屏识别完成」是纯浪费）
+                        // 明细回应用后在导入页逐笔可查
+                        val billDetail = found.take(3).joinToString("\n") { d ->
+                            val cat = runCatching { CategoryCatalog.of(d.categoryId).name }
+                                .getOrDefault("未分类")
+                            val kind = if (d.type == TransactionType.EXPENSE) "支出" else "收入"
+                            val note = d.note.take(8) + if (d.note.length > 8) "…" else ""
+                            buildString {
+                                append(kind).append(' ').append(formatMoney(d.amountCents))
+                                append(' ').append(cat)
+                                if (note.isNotBlank()) append(" · ").append(note)
+                            }
+                        } + if (found.size > 3) "\n…共 ${found.size} 笔" else ""
+                        val billSummary = "共 ${found.size} 笔 · 待确认$sourceHint"
+                        // 左侧大图标 = 当前识别到的类别（取第一笔的分类合成彩色圆底 + 白线素材）
+                        val islandIcon = runCatching {
+                            val category = CategoryCatalog.of(found.first().categoryId)
+                            android.graphics.drawable.Icon.createWithBitmap(
+                                categoryNotificationBitmap(
+                                    appContext,
+                                    category.name,
+                                    category.id,
+                                    // Category.color 存的是 Long（0xFF…），转回 ARGB Int
+                                    category.color.toInt(),
+                                ),
+                            )
+                        }.getOrNull()
+                        val confirmPi = PendingIntent.getBroadcast(
+                            appContext,
+                            SCREENSHOT_CONFIRM_REQUEST_CODE,
+                            Intent(appContext, BillConfirmReceiver::class.java).apply {
+                                action = BillConfirmReceiver.ACTION_CONFIRM
+                            },
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        )
                         report(
                             appContext,
                             "截屏识别完成",
-                            "识别到 ${found.size} 笔账单，点击核对后再导入",
+                            "识别到 ${found.size} 笔账单，点「确认记账」直接入账",
                             forceIsland = true,
+                            islandActionTitle = "确认记账",
+                            islandAction = confirmPi,
+                            islandDetail = billDetail,
+                            islandSummary = billSummary,
+                            islandIcon = islandIcon,
                         )
                     }
                     else -> {
                         // 悬浮窗模式：优先在卡片里就地确认（用户此刻就在账单页上）；
                         // 没有悬浮窗权限、或窗口加不上时，退回「草稿 + 通知」，绝不让结果凭空消失
-                        val shownInOverlay = withContext(Dispatchers.Main) {
-                            // 记账偏好里指定了账本就用它，否则跟随当前账本
-                            BillOverlay.show(
-                                appContext,
-                                found,
-                                AutoBookkeepingPrefs.effectiveLedger(
-                                    setting = AutoBookkeepingPrefs.ledger(appContext),
-                                    current = LedgerSelection.current.value,
-                                ),
-                                detailed = CapturePreferences.overlayStyle(appContext) ==
-                                    CapturePreferences.OVERLAY_DETAILED,
-                            )
+                        // 用户可在应用内关掉悬浮窗确认（即使系统权限仍在）；关掉时回落到草稿 + 通知
+                        val shownInOverlay = if (CapturePreferences.overlayConfirmEnabled(appContext)) {
+                            withContext(Dispatchers.Main) {
+                                // 记账偏好里指定了账本就用它，否则跟随当前账本
+                                BillOverlay.show(
+                                    appContext,
+                                    found,
+                                    AutoBookkeepingPrefs.effectiveLedger(
+                                        setting = AutoBookkeepingPrefs.ledger(appContext),
+                                        current = LedgerSelection.current.value,
+                                    ),
+                                    detailed = CapturePreferences.overlayStyle(appContext) ==
+                                        CapturePreferences.OVERLAY_DETAILED,
+                                )
+                            }
+                        } else {
+                            false
                         }
                         if (!shownInOverlay) {
                             _drafts.value = found
-                            report(appContext, "截屏识别完成", "识别到 ${found.size} 笔账单，点击核对后再导入")
+                            report(appContext, "截屏识别完成$sourceHint", "识别到 ${found.size} 笔账单，点击核对后再导入")
                         }
                     }
                 }
@@ -200,7 +279,20 @@ object ScreenCaptureFlow {
         _notice.value = null
     }
 
-    private fun report(context: Context, title: String, body: String, forceIsland: Boolean = false) {
+    private fun report(
+        context: Context,
+        title: String,
+        body: String,
+        forceIsland: Boolean = false,
+        islandActionTitle: String? = null,
+        islandAction: PendingIntent? = null,
+        /** 大岛展开卡主体的逐笔明细（仅通知模式的大岛用；null = 用 [body]） */
+        islandDetail: String? = null,
+        /** 大岛头部 / 底栏的笔数摘要；null = 用 [hintTitle] 短标题 */
+        islandSummary: String? = null,
+        /** 大岛左侧大图标（当前识别到的类别图标）；null = 应用图标 */
+        islandIcon: android.graphics.drawable.Icon? = null,
+    ) {
         _notice.value = "$title：$body"
         NotificationHelper.sendScreenshotNotice(
             context = context,
@@ -208,6 +300,11 @@ object ScreenCaptureFlow {
             body = body,
             route = Routes.SCREENSHOT_IMPORT,
             forceIsland = forceIsland,
+            islandActionTitle = islandActionTitle,
+            islandAction = islandAction,
+            islandDetail = islandDetail,
+            islandSummary = islandSummary,
+            islandIcon = islandIcon,
         )
     }
 }

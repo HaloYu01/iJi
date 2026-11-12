@@ -50,6 +50,7 @@ import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 账户作用域的「全部」哨兵值 */
 const val RECONCILE_ALL_ACCOUNTS = "全部账户"
@@ -74,7 +75,7 @@ const val RECONCILE_ALL_ACCOUNTS = "全部账户"
 fun ReconcileScreen(
     accountName: String = RECONCILE_ALL_ACCOUNTS,
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val accounts by app.accounts.collectAsStateWithLifecycle()

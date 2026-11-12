@@ -7,11 +7,13 @@ import android.provider.Settings
 import android.text.TextUtils
 
 /**
- * 支付通知无障碍服务的启用状态查询与跳转。
+ * 无障碍服务的启用状态查询、系统设置跳转，以及「音量键快捷键」绑定状态查询。
  *
- * 无障碍服务**没有**「是否已授权」的公开 API，只能读系统
- * `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`（已启用的服务组件列表）来判断，
- * 这是社区通用做法。注意该字段是「用户主动开启」的系统状态，应用无法自行写入。
+ * 无障碍服务**没有**「是否已授权」的公开 API，只能读系统 `Settings.Secure` 里的
+ * `ENABLED_ACCESSIBILITY_SERVICES`（已启用的服务组件列表）和
+ * `accessibility_shortcut_target_service`（音量键快捷键当前指向谁）来判断，
+ * 这是社区通用做法。**应用自身 uid 无权写入**这些字段；但用户主动点击、且 Shizuku 已授权时，
+ * 可借 shell 身份写入（见 [AccessibilityShortcutHelper]，带备份与一键恢复）。
  */
 object PaymentAccessibilityStatus {
 
@@ -43,4 +45,38 @@ object PaymentAccessibilityStatus {
         }
         return runCatching { context.startActivity(intent); true }.getOrDefault(false)
     }
+
+    /**
+     * 系统「音量键快捷键」当前绑定的目标服务。这个快捷键是全局唯一的，
+     * 常被别的应用占用；占用时按住音量键唤起的是那个应用，本服务一次都不会被启动。
+     */
+    fun shortcutTarget(context: Context): String? = runCatching {
+        Settings.Secure.getString(context.contentResolver, KEY_SHORTCUT_TARGET)
+    }.getOrNull()
+
+    /** 音量键快捷键是否指向本 App 的音量键识屏服务 */
+    fun isVolumeShortcutBound(context: Context): Boolean {
+        val expected = ComponentName(
+            context.packageName,
+            VolumeKeyCaptureService::class.java.name,
+        ).flattenToString()
+        val targets = shortcutTarget(context).orEmpty()
+        if (targets.isBlank()) return false
+        // 与 ENABLED_ACCESSIBILITY_SERVICES 一致：部分 ROM 会以 ':' 分隔多个目标
+        val splitter = TextUtils.SimpleStringSplitter(':')
+        splitter.setString(targets)
+        return splitter.any { it.equals(expected, ignoreCase = true) }
+    }
+
+    /**
+     * 打开系统无障碍设置，让用户为本服务开启「音量键快捷方式」。
+     *
+     * 刻意不跳 `android.settings.ACCESSIBILITY_SHORTCUT_SETTINGS`：真机（HyperOS）上这个
+     * action 虽能 resolve 到 `AccessibilityEditShortcutsActivity`，但缺必要 extra 时隐式启动
+     * 不显示任何页面、显式启动会落到「无障碍功能菜单」，比通用页更难找到目标。
+     * 通用无障碍页各 ROM 都有，配合页面里的操作文案即可定位到本服务的快捷方式开关。
+     */
+    fun openShortcutSettings(context: Context): Boolean = openSettings(context)
+
+    private const val KEY_SHORTCUT_TARGET = "accessibility_shortcut_target_service"
 }

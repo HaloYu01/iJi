@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.iji.app.DaySummary
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiIconFocusRing
+import com.iji.app.ui.theme.ExpenseAmount
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
@@ -189,7 +190,8 @@ internal fun CalendarCard(
                     SummaryPill(
                         "支",
                         formatMoney(monthExpense),
-                        MaterialTheme.colorScheme.primary,
+                        // 全局约定：消费红色
+                        ExpenseAmount,
                         Modifier.weight(1f),
                     )
                     Spacer(Modifier.width(6.dp))
@@ -352,7 +354,8 @@ private fun DayCell(
             )
             val amountColor = if (isSelected) Color.White.copy(alpha = 0.92f) else null
             if (expense > 0) {
-                CellAmount(prefix = "支", cents = expense, color = amountColor ?: primary)
+                // 全局约定：消费红色（选中态保持白色，保证与选中底色对比）
+                CellAmount(prefix = "支", cents = expense, color = amountColor ?: ExpenseAmount)
             }
             if (income > 0) {
                 CellAmount(prefix = "收", cents = income, color = amountColor ?: IncomeGreen)

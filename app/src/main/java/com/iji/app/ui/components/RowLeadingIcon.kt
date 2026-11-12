@@ -13,13 +13,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.Radius
 
 /**
  * 设置行的左图标（P2-3 定稿：**彩色方块**）。
  *
- * 规格：`boxSize`（默认 28dp）方块 + `Radius.sm`(8dp) 圆角 + `accent.copy(alpha = 0.14f)` 底色
- * + `boxSize * 0.64`（默认约 18dp）的**同色**图标；与标题的间距 12dp 由自带 `padding(end)` 提供
+ * 规格：`boxSize`（默认 [IjiIconSize.BadgeBox] = 28dp）方块 + `Radius.sm`(8dp) 圆角 +
+ * `accent.copy(alpha = 0.14f)` 底色 + `boxSize * 0.714`（默认 [IjiIconSize.BadgeGlyph] = 20dp）的
+ * **同色**图标；与标题的间距 12dp 由自带 `padding(end)` 提供
  * （外层不要再补 Spacer，否则整行点击区的语义会被拆散）。
  *
  * **颜色约定**：`accent` 是"入口语义色"，按**分组复用**而不是每行一个色。当前分配：
@@ -39,7 +41,7 @@ fun RowLeadingIcon(
     icon: ImageVector,
     accent: Color,
     modifier: Modifier = Modifier,
-    boxSize: Dp = 28.dp,
+    boxSize: Dp = IjiIconSize.BadgeBox,
 ) {
     Box(
         modifier = modifier
@@ -55,7 +57,8 @@ fun RowLeadingIcon(
             icon,
             contentDescription = null,
             tint = accent,
-            modifier = Modifier.size(boxSize * 0.64f),
+            // 20 / 28：与全局 BadgeGlyph 一致；传自定义 boxSize 时按同比例缩放
+            modifier = Modifier.size(boxSize * 0.714f),
         )
     }
 }

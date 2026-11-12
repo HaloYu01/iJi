@@ -50,6 +50,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.iji.app.ui.util.sharedMainViewModel
 
 private val ALERT_TIME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("M月d日 HH:mm", Locale.CHINA)
@@ -66,7 +67,7 @@ private val ALERT_TIME_FORMAT: DateTimeFormatter =
 @Composable
 fun BudgetAlertScreen(
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val repo = remember { BudgetComponents.repository() }

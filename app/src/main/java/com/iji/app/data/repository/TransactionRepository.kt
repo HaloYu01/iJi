@@ -380,6 +380,17 @@ class TransactionRepository(private val dao: TransactionDao?) {
         }
     }
 
+    /** 跨账本按 id 批量取：撤销导入批次时不能依赖「当前账本过滤后」的内存列表 */
+    suspend fun byIds(ids: Collection<Long>): List<Transaction> {
+        if (ids.isEmpty()) return emptyList()
+        val d = dao
+        return if (d != null) {
+            d.getByIds(ids.toList()).map { it.toModel() }
+        } else {
+            memory.value.filter { it.id in ids }
+        }
+    }
+
     /** 批量删除账单（[inRange] / [allByLedger] 的命中结果） */
     suspend fun deleteAll(transactions: List<Transaction>) {
         if (transactions.isEmpty()) return

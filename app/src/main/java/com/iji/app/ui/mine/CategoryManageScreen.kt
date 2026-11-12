@@ -1,10 +1,18 @@
 package com.iji.app.ui.mine
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,13 +29,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -37,49 +42,50 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iji.app.CategoryUsage
 import com.iji.app.MainViewModel
 import com.iji.app.data.model.Category
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
-import com.iji.app.data.repository.CategoryIconStore
 import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.IjiDialogActionButton
+import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenu
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenuItem
+import com.iji.app.ui.components.menu.LiquidGlassDropdownOverlayHost
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.DropdownEntry
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.More
-import top.yukonga.miuix.kmp.overlay.OverlayCascadingListPopup
-import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 网格列数：与参照实现 CategoryComponent 的 `line = 5` 保持一致 */
 private const val GRID_LINE = 5
@@ -101,7 +107,7 @@ private sealed interface GridItem {
  *
  * 结构对应关系：
  * - `MaterialToolbar`（返回 + 标题 + `@menu/category_menu`）→ [MineSubPage]
- * - `TabLayout`（支出 / 收入）→ [TabRow]（本项目多一个「转账」页，为数据模型所需）
+ * - `TabLayout`（支出 / 收入）→ [IjiSegmentedRow]（转账分类固定，不设管理页）
  * - `ViewPager2` + `CategoryComponent` → 同一 Tab 下切换的 5 列网格
  * - 点击父分类就地插入/移除子面板 → [expandedParentId] 单状态
  * - `onItemLongClick` → 弹出「编辑 / 删除」
@@ -111,14 +117,14 @@ private sealed interface GridItem {
  * 1. 出厂分类不再是"不可编辑的常量"，与自建分类同权：可改名、可删除、可排序。
  * 2. 删除走「引用迁移」：该分类（含子分类）下的账单 / 预算 / 周期账单 / 模板
  *    一起改挂到「其他」，删除前在弹窗里明确告知影响面。
- * 3. 新增「排序」模式：单列拖动，松手才写盘（复用资产页已验证的拖拽实现）。
+ * 3. 新增「排序」模式：单列长按拖动，松手才写盘。
  * 4. 移除「切换账本」：分类是全局目录，那个入口什么都不会改，属假入口。
  */
 @Composable
 fun CategoryManageScreen(
     onBack: () -> Unit,
     onNavigateEdit: (categoryId: String, type: TransactionType, parentId: String, ledger: String) -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
@@ -127,7 +133,6 @@ fun CategoryManageScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     // 目录存在 SharedPreferences + 内存缓存，增删改后靠 refresh 触发重读
     var refresh by remember { mutableIntStateOf(0) }
-    var query by remember { mutableStateOf("") }
 
     // 当前展开的子面板（同一时刻仅一个）
     var expandedParentId by remember { mutableStateOf<String?>(null) }
@@ -142,36 +147,33 @@ fun CategoryManageScreen(
     var sortMode by remember { mutableStateOf(false) }
     var sortParentId by remember { mutableStateOf<String?>(null) }
 
+    // 系统返回手势与顶栏返回同口径：排序模式先逐层退（二级→一级→退出排序），
+    // 不让手势直接把整个子页弹出去
+    BackHandler(enabled = sortMode) {
+        if (sortParentId != null) sortParentId = null else sortMode = false
+    }
+
+    // 右上角「更多」菜单（NexioSchedule LiquidGlassDropdownMenu；面板在 popup 层）
+    var menuOpen by remember { mutableStateOf(false) }
+    val menuAnchor = remember { mutableStateOf(Rect.Zero) }
+    val menuFraction = remember { Animatable(0f) }
+
     val currentType = when (selectedTab) {
         0 -> TransactionType.EXPENSE
-        1 -> TransactionType.INCOME
-        else -> TransactionType.TRANSFER
+        else -> TransactionType.INCOME
     }
-    val isTransfer = currentType == TransactionType.TRANSFER
     val ledger = remember { viewModel.currentLedger.value }
 
-    // 分类列表：转账不分类层级，单列展示
+    // 分类列表：转账不设分类管理（转账分类固定，无需增删改排序）
     val parents = remember(refresh, selectedTab) {
-        if (isTransfer) CategoryCatalog.transfers else CategoryCatalog.parentsOfType(currentType)
-    }
-    // 搜索过滤：父名命中保留全部子项；仅子项命中则保留该父（作为上下文）
-    val filteredParents = remember(parents, query) {
-        val q = query.trim()
-        if (q.isBlank()) {
-            parents
-        } else {
-            parents.filter { p ->
-                p.name.contains(q, true) ||
-                    CategoryCatalog.childrenOf(p.id).any { it.name.contains(q, true) }
-            }
-        }
+        CategoryCatalog.parentsOfType(currentType)
     }
 
     // 行模型：先把分类切成每行 5 格，再在「展开父分类所在行」之后插入整行子面板
-    val rows = remember(filteredParents, expandedParentId, isTransfer) {
-        val cells: List<GridItem> = filteredParents.map { GridItem.Cell(it, false) } +
+    val rows = remember(parents, expandedParentId) {
+        val cells: List<GridItem> = parents.map { GridItem.Cell(it, false) } +
             // 「添加一级分类」伪分类格，追加到列表末尾
-            if (isTransfer) emptyList() else listOf(GridItem.Cell(null, true))
+            listOf(GridItem.Cell(null, true))
         buildList {
             cells.chunked(GRID_LINE).forEach { row ->
                 add(row)
@@ -207,54 +209,40 @@ fun CategoryManageScreen(
                 else -> onBack()
             }
         },
-        endAction = {
-            if (sortMode) {
+        endAction = if (sortMode) {
+            // 排序自动保存，右上角不放动作键（「完成」已删）：退出排序走返回手势/顶栏 ←
+            null
+        } else {
+            {
+                // 右上角「更多」：LiquidGlass 面板的定位锚点（面板本体长在屏幕根的 popup 宿主里）
                 Box(
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
-                        .clickable { sortMode = false; sortParentId = null },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("完成", color = MiuixPrimary, fontWeight = FontWeight.SemiBold)
-                }
-            } else {
-                var menuOpen by remember { mutableStateOf(false) }
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .clickable { menuOpen = true },
+                        .clickable(
+                            // 触发钮无默认涟漪（NexioSchedule 同款）：反馈由面板原地弹出承接
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { menuOpen = true }
+                        .onGloballyPositioned { menuAnchor.value = it.boundsInWindow() },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         MiuixIcons.More,
                         contentDescription = "更多",
                         tint = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier
+                            .graphicsLayer {
+                                // 一镜到底（NexioSchedule）：图标随 fraction 向面板内部（左下）
+                                // 漂移并提前淡完（k=2.5）；收起以更小系数更早浮现（k=1.7）
+                                val iconK = if (menuOpen) 2.5f else 1.7f
+                                val p = (menuFraction.value * iconK).coerceIn(0f, 1f)
+                                alpha = 1f - p
+                                translationX = -p * 10.dp.toPx()
+                                translationY = p * 10.dp.toPx()
+                            }
+                            .size(24.dp),
                     )
-                    if (menuOpen) {
-                        OverlayCascadingListPopup(
-                            show = true,
-                            entries = listOf(
-                                DropdownEntry(
-                                    items = listOf(
-                                        DropdownItem(text = "排序分类", onClick = {
-                                            menuOpen = false
-                                            sortMode = true
-                                            sortParentId = null
-                                        }),
-                                        DropdownItem(text = "恢复默认分类", onClick = {
-                                            menuOpen = false
-                                            showRestoreConfirm = true
-                                        }),
-                                    ),
-                                ),
-                            ),
-                            onDismissRequest = { menuOpen = false },
-                            renderInRootScaffold = true,
-                        )
-                    }
                 }
             }
         },
@@ -313,40 +301,23 @@ fun CategoryManageScreen(
             return@MineSubPage
         }
 
-        // ── Tab：支出 / 收入 / 转账 ──
-        TabRow(
-            selectedTabIndex = selectedTab,
-            containerColor = MaterialTheme.colorScheme.background,
-            modifier = Modifier.padding(top = ijiTopBarContentPadding()),
-        ) {
-            listOf("支出", "收入", "转账").forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = {
-                        selectedTab = index
-                        query = ""
-                        expandedParentId = null
-                        menuTarget = null
-                    },
-                    text = { Text(title) },
-                )
-            }
-        }
+        // ── 支出 / 收入切换：与统计页同款分段控件（转账分类固定，不设管理页） ──
+        IjiSegmentedRow(
+            options = listOf(0, 1),
+            selected = selectedTab,
+            onSelect = { index ->
+                selectedTab = index
+                expandedParentId = null
+                menuTarget = null
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = ijiTopBarContentPadding())
+                .padding(horizontal = LocalDimens.current.screenPadding),
+            label = { if (it == 0) "支出" else "收入" },
+        )
 
-        // 搜索框（参照实现的列表页无搜索，此项为既有设计保留）
-        if (!isTransfer) {
-            top.yukonga.miuix.kmp.basic.TextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = LocalDimens.current.screenPadding)
-                    .padding(top = 8.dp),
-                label = "搜索分类",
-            )
-        }
-
-        if (filteredParents.isEmpty()) {
+        if (parents.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -355,19 +326,17 @@ fun CategoryManageScreen(
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text(
-                    if (query.isBlank()) "还没有分类" else "未找到匹配的分类",
+                    "还没有分类",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                 )
-                if (query.isBlank()) {
-                    Spacer(Modifier.height(14.dp))
-                    IjiDialogActionButton(
-                        text = "新建分类",
-                        onClick = { openEditor("", NO_PARENT) },
-                        prominent = true,
-                        modifier = Modifier.padding(horizontal = 60.dp),
-                    )
-                }
+                Spacer(Modifier.height(14.dp))
+                IjiDialogActionButton(
+                    text = "新建分类",
+                    onClick = { openEditor("", NO_PARENT) },
+                    prominent = true,
+                    modifier = Modifier.padding(horizontal = 60.dp),
+                )
             }
         } else {
             Column(
@@ -420,6 +389,44 @@ fun CategoryManageScreen(
         }
     }
 
+    // ── 右上角「更多」菜单 overlay（NexioSchedule LiquidGlassDropdownMenu）──
+    // 面板长在 popup 层，覆盖式（End）平移到锚点：从「更多」按钮原地生长/缩回。
+    val menuBackdrop = LocalAppBackdrop.current
+    if (menuBackdrop != null) {
+        LiquidGlassDropdownOverlayHost(expanded = menuOpen, onOutsideTap = { menuOpen = false }) {
+            LiquidGlassDropdownMenu(
+                show = menuOpen,
+                backdrop = menuBackdrop,
+                fraction = menuFraction,
+                onDismiss = { menuOpen = false },
+                // 覆盖式（End）：控制盒**右上角**恒 = 锚右 + 26dp——面板从「更多」按钮
+                // 位置向左下生长覆盖触发器，收起缩回按钮位置与图标衔接
+                modifier = Modifier
+                    .graphicsLayer {
+                        alpha = (menuFraction.value.coerceAtLeast(0f) / 0.3f).coerceIn(0f, 1f)
+                        translationX = menuAnchor.value.right + 26.dp.toPx() - size.width
+                        translationY = menuAnchor.value.top - 26.dp.toPx()
+                    },
+            ) {
+                LiquidGlassDropdownMenuItem(
+                    text = "排序分类",
+                    onClick = {
+                        menuOpen = false
+                        sortMode = true
+                        sortParentId = null
+                    },
+                )
+                LiquidGlassDropdownMenuItem(
+                    text = "恢复默认分类",
+                    onClick = {
+                        menuOpen = false
+                        showRestoreConfirm = true
+                    },
+                )
+            }
+        }
+    }
+
     // ── 长按分类后的操作面板 ──
     //
     // 刻意不用 OverlayCascadingListPopup：长按是在**手指还按着**的时候触发的，
@@ -432,14 +439,16 @@ fun CategoryManageScreen(
             title = target.name,
             summary = "改名不会影响已记账单的分类归属；删除前会告诉你影响了多少笔账单。",
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 IjiDialogActionButton(
                     text = "编辑",
                     onClick = { openEditor(target.id, target.parentId ?: NO_PARENT) },
                     prominent = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.height(8.dp))
                 IjiDialogActionButton(
                     text = "删除",
                     onClick = {
@@ -449,7 +458,7 @@ fun CategoryManageScreen(
                     // prominent 才会用 color 上色；非 prominent 会退回次要文字色，"危险"感就没了
                     prominent = true,
                     color = AppleRed,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
@@ -526,9 +535,12 @@ fun CategoryManageScreen(
 /**
  * 排序模式列表：单列，长按整行拖动，越过相邻行中点即换位，松手才写盘。
  *
- * 直接复用资产页 `AccountGroupCard` 的成熟做法（同项目内已验证）：
+ * 拖拽交互沿用资产页 `AccountGroupCard` 的成熟做法（同项目内已验证）：
  * 本地顺序即时换位 + `graphicsLayer.translationY` 跟随手指 + `rememberUpdatedState`
  * 避免 `pointerInput` 闭包抓到过期状态。
+ *
+ * 容器用 LazyColumn：被换位的行由 `Modifier.animateItem` 的 spring 补间平滑让位，
+ * 拖拽行以 zIndex 提层 + 圆角阴影 + 轻微放大浮起成独立卡片。
  */
 @Composable
 private fun SortableCategoryList(
@@ -581,71 +593,73 @@ private fun SortableCategoryList(
         if (moved) onPersist(order.map { it.id })
     }
 
-    /**
-     * 上下微调一格（行尾 ↑↓ 按钮）。
-     *
-     * 拖动是主交互，但"长按再拖"对手指不灵活的用户、以及无障碍读屏用户都不友好；
-     * 补一对按钮后，排序既可以用拖的，也可以一次挪一格，且点一下就能落盘、可预期。
-     */
-    fun nudge(from: Int, delta: Int) {
-        val to = from + delta
-        if (to !in order.indices) return
-        move(from, to)
-        onPersist(order.map { it.id })
-    }
-
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.xl))
             .background(MaterialTheme.colorScheme.surface),
     ) {
-        order.forEachIndexed { index, category ->
-            key(category.id) {
-                val dragging = draggingId == category.id
-                val startDrag = rememberUpdatedState<() -> Unit> {
-                    draggingId = category.id
-                    dragOffset = 0f
-                }
-                val dragBy = rememberUpdatedState<(Float) -> Unit> { dy -> handleDrag(category.id, dy) }
-                val endDrag = rememberUpdatedState<() -> Unit> { finishDrag() }
-                SortableCategoryRow(
-                    category = category,
-                    childCount = CategoryCatalog.childrenOf(category.id).size,
-                    trailingArrow = onOpenChildren != null && CategoryCatalog.childrenOf(category.id).isNotEmpty(),
-                    onOpenChildren = { onOpenChildren?.invoke(category) },
-                    canMoveUp = index > 0,
-                    canMoveDown = index < order.lastIndex,
-                    onMoveUp = { nudge(order.indexOfFirst { it.id == category.id }, -1) },
-                    onMoveDown = { nudge(order.indexOfFirst { it.id == category.id }, 1) },
-                    modifier = Modifier
-                        .onGloballyPositioned { rowHeights[category.id] = it.size.height }
-                        .zIndex(if (dragging) 1f else 0f)
-                        .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
-                        .pointerInput(category.id) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    startDrag.value()
-                                },
-                                onDrag = { change, amount ->
-                                    change.consume()
-                                    dragBy.value(amount.y)
-                                },
-                                onDragEnd = { endDrag.value() },
-                                onDragCancel = { endDrag.value() },
-                            )
-                        },
-                )
-                if (index < order.lastIndex) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 68.dp)
-                            .height(0.5.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        itemsIndexed(order, key = { _, category -> category.id }) { index, category ->
+            val dragging = draggingId == category.id
+            // 拖拽行轻微放大，与「被抓住」的浮起感联动
+            val dragScale by animateFloatAsState(if (dragging) 1.04f else 1f, label = "dragScale")
+            val startDrag = rememberUpdatedState<() -> Unit> {
+                draggingId = category.id
+                dragOffset = 0f
+            }
+            val dragBy = rememberUpdatedState<(Float) -> Unit> { dy -> handleDrag(category.id, dy) }
+            val endDrag = rememberUpdatedState<() -> Unit> { finishDrag() }
+            SortableCategoryRow(
+                category = category,
+                childCount = CategoryCatalog.childrenOf(category.id).size,
+                trailingArrow = onOpenChildren != null && CategoryCatalog.childrenOf(category.id).isNotEmpty(),
+                onOpenChildren = { onOpenChildren?.invoke(category) },
+                modifier = Modifier
+                    .then(
+                        // 只有被换位的行做 spring 让位补间；拖拽行**不参与**——它换位时
+                        // translationY 同步减去一行高，基础位置直接跳到新槽位才不与手指脱节，
+                        // 若也补间则两种位移叠加，行会回弹跳动
+                        if (dragging) Modifier
+                        else Modifier.animateItem(
+                            placementSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                        ),
                     )
-                }
+                    .onGloballyPositioned { rowHeights[category.id] = it.size.height }
+                    .zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (dragging) dragOffset else 0f
+                        scaleX = dragScale
+                        scaleY = dragScale
+                        // 圆角阴影 + 放大：拖拽行浮起成一张独立卡片
+                        shape = RoundedCornerShape(Radius.lg)
+                        shadowElevation = if (dragging) 12.dp.toPx() else 0f
+                    }
+                    .pointerInput(category.id) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                startDrag.value()
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                dragBy.value(amount.y)
+                            },
+                            onDragEnd = { endDrag.value() },
+                            onDragCancel = { endDrag.value() },
+                        )
+                    },
+            )
+            if (index < order.lastIndex) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 68.dp)
+                        .height(0.5.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                )
             }
         }
     }
@@ -657,22 +671,21 @@ private fun SortableCategoryRow(
     childCount: Int,
     trailingArrow: Boolean,
     onOpenChildren: () -> Unit,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // 不透明底 + 圆角：拖拽行浮起盖过相邻行时不露馅，浮起轮廓与阴影 shape 一致
+            .clip(RoundedCornerShape(Radius.lg))
+            .background(MaterialTheme.colorScheme.surface)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CategoryIconImage(
             name = category.name,
             color = Color(category.color),
-            size = 36.dp,
+            size = IjiIconSize.ListRow,
             categoryId = category.id,
         )
         Spacer(Modifier.size(14.dp))
@@ -701,18 +714,16 @@ private fun SortableCategoryRow(
                 Icon(
                     MiuixIcons.ChevronForward,
                     contentDescription = "排序子分类",
-                    tint = MiuixPrimary,
+                    // 「进入下一层」语义，非排序操作：降为次要色
+                    tint = TextSecondary,
                     modifier = Modifier.size(18.dp),
                 )
             }
         }
-        // 上下微调：拖不动、或者只想挪一格时用；点一下立刻落盘
-        MoveStepButton(text = "↑", enabled = canMoveUp, description = "上移", onClick = onMoveUp)
-        MoveStepButton(text = "↓", enabled = canMoveDown, description = "下移", onClick = onMoveDown)
         // 拖拽把手：纯装饰，实际拖拽作用在整行上
         Box(
             modifier = Modifier
-                .padding(start = 6.dp)
+                .padding(start = 10.dp)
                 .size(width = 22.dp, height = 36.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -727,35 +738,6 @@ private fun SortableCategoryRow(
                 }
             }
         }
-    }
-}
-
-/**
- * 排序行的上/下移按钮：**48×48dp** 命中区（无障碍最小触摸目标），
- * 禁用时置灰但仍占位（避免行内元素跳动）。
- *
- * 原先只有 36×40dp：视觉上够用，但拖动排序时手本来就抖，差 8dp 就容易点空。
- */
-@Composable
-private fun MoveStepButton(
-    text: String,
-    enabled: Boolean,
-    description: String,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .size(48.dp)
-            .clip(RoundedCornerShape(Radius.lg))
-            .clickable(enabled = enabled, onClick = onClick)
-            .semantics { contentDescription = description },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (enabled) TextSecondary else TextSecondary.copy(alpha = 0.25f),
-        )
     }
 }
 
@@ -800,7 +782,7 @@ private fun CategoryGridCell(
                 CategoryIconImage(
                     name = category.name,
                     color = Color(category.color),
-                    size = 40.dp,
+                    size = IjiIconSize.Grid,
                     categoryId = category.id,
                 )
             }
@@ -838,6 +820,7 @@ private fun CategoryGridCell(
 
 /**
  * 子分类面板：占满整行，内部是二级分类的同款 5 列网格，末尾带「添加」格。
+ * 用 surfaceVariant 铺一层底纹，和一级分类网格区分开（展开时一眼看出层级）。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -853,38 +836,33 @@ private fun ChildCategoryPanel(
             .fillMaxWidth()
             .padding(vertical = 6.dp)
             .clip(RoundedCornerShape(Radius.xl))
-            .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.6f))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 6.dp, vertical = 8.dp),
     ) {
-        children.chunked(GRID_LINE).forEach { row ->
+        // 「添加」作为最后一个网格格并入同一批 chunked：紧跟子分类后面，
+        // 只有恰好铺满一行时才自然换行，不再单独占一整行。
+        val cells = children.map { GridItem.Cell(it, false) } + GridItem.Cell(null, true)
+        cells.chunked(GRID_LINE).forEach { row ->
             Row(modifier = Modifier.fillMaxWidth()) {
-                row.forEach { child ->
+                row.forEach { cell ->
                     Box(modifier = Modifier.weight(1f)) {
                         CategoryGridCell(
-                            category = child,
-                            isAdd = false,
+                            category = cell.category,
+                            isAdd = cell.add,
                             hasChild = false,
-                            onClick = { onChildClick(child) },
-                            onLongClick = { onChildLongClick(child) },
+                            onClick = {
+                                if (cell.add) onAddChild(parent)
+                                else cell.category?.let { onChildClick(it) }
+                            },
+                            onLongClick = {
+                                if (!cell.add) cell.category?.let { onChildLongClick(it) }
+                            },
                         )
                     }
                 }
                 repeat(GRID_LINE - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Box(modifier = Modifier.weight(1f)) {
-                CategoryGridCell(
-                    category = null,
-                    isAdd = true,
-                    hasChild = false,
-                    onClick = { onAddChild(parent) },
-                    onLongClick = { },
-                )
-            }
-            repeat(GRID_LINE - 1) { Spacer(Modifier.weight(1f)) }
-        }
     }
 }
-
 

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -28,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.iji.app.accessibility.AutoBookkeepingPrefs
 import com.iji.app.accessibility.PaymentAccessibilityStatus
 import com.iji.app.accessibility.PaymentNotificationFilter
 import com.iji.app.accessibility.PaymentNotificationParser
@@ -35,7 +35,6 @@ import com.iji.app.data.repository.SettingsRepository
 import com.iji.app.ui.components.IjiFormCard
 import com.iji.app.ui.components.IjiFormDivider
 import com.iji.app.ui.components.IjiFormSectionTitle
-import com.iji.app.ui.components.IjiPrimaryButton
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiTopBarContentPadding
@@ -57,6 +56,7 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
     val snackbar = LocalSnackbarController.current
 
     var a11yEnabled by remember { mutableStateOf(PaymentAccessibilityStatus.isEnabled(context)) }
+    var masterEnabled by remember { mutableStateOf(AutoBookkeepingPrefs.masterEnabled(context)) }
     var whitelist by remember {
         mutableStateOf(
             SettingsRepository.getString(
@@ -69,8 +69,19 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
     var blacklist by remember {
         mutableStateOf(SettingsRepository.getString(context, PaymentNotificationFilter.KEY_BLACKLIST, ""))
     }
-    val saved = remember { whitelist to blacklist }
-    val dirty = (whitelist to blacklist) != saved
+    /** 改一项立刻写盘（与「记账偏好」一致），不再需要「保存」按钮，也不会有未保存的脏状态 */
+    fun persist(nextWhitelist: String, nextBlacklist: String) {
+        SettingsRepository.setString(
+            context,
+            PaymentNotificationFilter.KEY_WHITELIST,
+            nextWhitelist,
+        )
+        SettingsRepository.setString(
+            context,
+            PaymentNotificationFilter.KEY_BLACKLIST,
+            nextBlacklist,
+        )
+    }
 
     val sources = remember { PaymentNotificationParser.supportedSources.values.toList() }
 
@@ -89,10 +100,15 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
                         Text("支付通知自动记账", style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            if (a11yEnabled) {
-                                "已开启：只读支付类通知的文字，本机解析后提示你确认。"
-                            } else {
-                                "未开启：需要在系统「无障碍」里授权，应用才能读到通知文字。"
+                            buildString {
+                                append(
+                                    if (a11yEnabled) {
+                                        "已开启：只读支付类通知的文字，本机解析后提示你确认。"
+                                    } else {
+                                        "未开启：需要在系统「无障碍」里授权，应用才能读到通知文字。"
+                                    },
+                                )
+                                if (!masterEnabled) append(" 应用内总闸已关闭，暂不会提示记账。")
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
@@ -125,7 +141,10 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
                         BoxBackground {
                             TextField(
                                 whitelist,
-                                { whitelist = it },
+                                {
+                                    whitelist = it
+                                    persist(it, blacklist)
+                                },
                                 Modifier.fillMaxWidth().height(120.dp),
                             )
                         }
@@ -135,7 +154,10 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
                         BoxBackground {
                             TextField(
                                 blacklist,
-                                { blacklist = it },
+                                {
+                                    blacklist = it
+                                    persist(whitelist, it)
+                                },
                                 Modifier.fillMaxWidth().height(72.dp),
                             )
                         }
@@ -144,39 +166,19 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
             }
 
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IjiPrimaryButton(
-                    text = "保存",
-                    enabled = dirty,
+                Text(
+                    "即时生效 · 白名单 ${PaymentNotificationFilter.wordCount(whitelist)} 词，" +
+                        "黑名单 ${PaymentNotificationFilter.wordCount(blacklist)} 词",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
                     modifier = Modifier.weight(1f),
-                    onClick = {
-                        SettingsRepository.setString(
-                            context,
-                            PaymentNotificationFilter.KEY_WHITELIST,
-                            whitelist,
-                        )
-                        SettingsRepository.setString(
-                            context,
-                            PaymentNotificationFilter.KEY_BLACKLIST,
-                            blacklist,
-                        )
-                        snackbar.show(
-                            "已保存：白名单 ${PaymentNotificationFilter.wordCount(whitelist)} 词，" +
-                                "黑名单 ${PaymentNotificationFilter.wordCount(blacklist)} 词",
-                        )
-                    },
                 )
-                Spacer(Modifier.width(12.dp))
                 IjiTextAction(
                     text = "恢复默认",
                     onClick = {
                         whitelist = PaymentNotificationFilter.DEFAULT_WHITELIST
                         blacklist = ""
-                        SettingsRepository.setString(
-                            context,
-                            PaymentNotificationFilter.KEY_WHITELIST,
-                            PaymentNotificationFilter.DEFAULT_WHITELIST,
-                        )
-                        SettingsRepository.setString(context, PaymentNotificationFilter.KEY_BLACKLIST, "")
+                        persist(whitelist, blacklist)
                         snackbar.show("已恢复默认词表")
                     },
                 )
@@ -209,6 +211,7 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     a11yEnabled = PaymentAccessibilityStatus.isEnabled(context)
+                    masterEnabled = AutoBookkeepingPrefs.masterEnabled(context)
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)

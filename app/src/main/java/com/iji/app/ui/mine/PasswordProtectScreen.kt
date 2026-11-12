@@ -53,7 +53,6 @@ fun PasswordProtectScreen(
     // 验证弹窗里的指纹入口：设备支持且用户开了指纹解锁才出现
     val fingerprintUsable = fingerprintAvailable && fingerprintEnabled
 
-    // P0：手搓顶栏 + 不可滚动的 Column → 统一改用 MineSubPage（顶栏一套 + 内容可滚动）
     MineSubPage(title = "密码保护", onBack = onBack) {
         Column(
             modifier = Modifier

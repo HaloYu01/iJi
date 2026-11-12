@@ -10,8 +10,8 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,17 +20,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -38,17 +36,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -60,51 +56,21 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import com.iji.app.accessibility.CapturePreferences
 import com.iji.app.ai.BillDraft
-import com.iji.app.data.db.DbProvider
-import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.data.repository.QuickBillWriter
-import com.iji.app.reminder.SuperIslandNotifier
+import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.theme.IjiTheme
-import com.iji.app.ui.theme.IncomeGreen
-import com.iji.app.ui.theme.Radius
-import com.iji.app.ui.theme.TextSecondary
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.util.Locale
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 
 /**
- * 识屏结果悬浮窗：在其他应用之上直接确认账单（参考 AutoAccounting 的 `FloatingTip`，
- * 同样是 `TYPE_APPLICATION_OVERLAY` + `FLAG_NOT_FOCUSABLE`）。
+ * 识屏结果悬浮窗：在其他应用之上直接确认账单（`TYPE_APPLICATION_OVERLAY`）。
+ * 详细 / 简洁两种排版由 [OverlayCard] 装入 [OverlayShell]，样式在「设置 → 识屏记账」切换。
  *
- * 为什么要有它：Shizuku 截屏发生在**别的应用**之上，识别完如果只能发通知，
- * 用户还得点通知、跳回本应用、再确认——中间任何一步走神，这笔账就丢了。
- * 悬浮窗把「看一眼 + 点一下」压缩到支付完成后的那几秒里。
- *
- * 两种卡片样式（`CapturePreferences.overlayStyle`，另有超级岛通知模式不走本类）：
- * - **详细**：**固定贴屏幕顶端**的单笔确认卡，按 Figma「详细版页面」还原（见 [DetailedOverlayCard]）：
- *   类型 / 金额 / 账户 / 分类 / 日期 / 标签 / 备注 + 不计入预算、计入资产，保存后自动进下一笔；
- * - **简洁**：底部只读预览（分类 / 账户 / 日期 / 金额 / 备注），点一行补改备注。
- *
- * 编辑实现的关键约束：悬浮窗默认 `FLAG_NOT_FOCUSABLE`（不抢下方应用的焦点），
- * 但这样 TextField 拿不到输入法。所以行内编辑文本时由 [setWindowFocusable]
- * 临时把窗口切成可聚焦、收起后立刻切回——不开任何对话框 / 新窗口，反应最快。
- *
- * 其余取舍：
- * - 不加常驻悬浮球，只在识别出账单后出现，确认或忽略即消失；
- * - 不加「自动记账」，金额/分类/账户仍要用户看一眼再点（宁可多点一下，不可记错账）；
- * - 视图与 owner 跨次复用（dismiss 只摘窗不销毁），第二次弹出不再冷启动整套 Compose；
- * - 视图直接挂在应用进程上（不经 Service），少一层后台启动限制。
+ * 关键约束：默认 `FLAG_NOT_FOCUSABLE` 时 TextField 拿不到输入法，行内编辑文本时由
+ * [setWindowFocusable] 临时切成可聚焦、收起后立刻切回——不开对话框 / 新窗口。
+ * 不加自动记账，金额/分类/账户仍要用户看一眼再点（宁可多点一下，不可记错账）。
  */
 object BillOverlay {
 
@@ -129,7 +95,7 @@ object BillOverlay {
     /**
      * 显示确认卡片。
      *
-     * @param detailed true = 详细模式（全字段可编辑），false = 简洁模式（只补备注）
+     * @param detailed true = 详细模式（全字段可编辑），false = 简洁模式（只补备注 + 剔除）
      * @return 是否真的挂到了窗口上；false 时调用方应退回通知，不能假装展示过了
      */
     fun show(
@@ -264,12 +230,16 @@ private class OverlayOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegi
     override val savedStateRegistry: SavedStateRegistry get() = savedStateController.savedStateRegistry
 }
 
-/** 简洁模式的行内编辑只有备注一种 */
-private const val EDIT_NOTE = "note"
-
 /** 简洁模式最多展示的行数 */
 private const val COMPACT_MAX_ROWS = 4
 
+/**
+ * 卡片主体：品牌行 + （详细模式）进度条 + 两种排版之一。
+ *
+ * 样式只在设置里切换，卡片内不提供入口：这里按 [detailed]（调起时读好的偏好）
+ * 直接渲染对应排版。编辑状态（draftsState / detailedIndex / skipped）仍提在这一层，
+ * 让详细模式的进度、简洁模式的剔除与两边的字段修改都落在同一份数据上。
+ */
 @Composable
 private fun OverlayCard(
     drafts: List<BillDraft>,
@@ -277,325 +247,325 @@ private fun OverlayCard(
     detailed: Boolean,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
+    // 当前弹出的所有笔；剔除只影响显示与写库，原列表不动
+    var draftsState by remember(drafts) { mutableStateOf(drafts) }
+    /** 详细模式的当前笔（保存/跳过推进） */
+    var detailedIndex by remember(drafts) { mutableIntStateOf(0) }
+    /** 简洁模式里被剔除的笔（识别错误的），写库时跳过 */
+    var skipped by remember(drafts) { mutableStateOf(setOf<Int>()) }
+    /** 非 null = 已完成写入（值 = 笔数），顶部徽章随之换成完成态 */
+    var doneCount by remember { mutableStateOf<Int?>(null) }
+
+    fun changeDraft(index: Int, draft: BillDraft) {
+        draftsState = draftsState.mapIndexed { i, old -> if (i == index) draft else old }
+    }
+
+    OverlayShell(onDismissed = onDismiss) { close ->
+        OverlayBrandRow(
+            badge = when {
+                doneCount != null -> "✓ 已记 $doneCount"
+                detailed && draftsState.size > 1 -> "${detailedIndex + 1}/${draftsState.size}"
+                !detailed -> "${draftsState.size - skipped.size} 笔"
+                else -> null
+            },
+        )
+        if (detailed && doneCount == null && draftsState.size > 1) {
+            Spacer(Modifier.height(6.dp))
+            // 跳过也算处理过了：进度反映的是「处理到第几笔」
+            OverlayProgress(done = detailedIndex, total = draftsState.size)
+        }
+        Spacer(Modifier.height(10.dp))
+        if (detailed) {
+            DetailedOverlayCard(
+                drafts = draftsState,
+                initialIndex = detailedIndex,
+                onDraftChange = { index, draft -> changeDraft(index, draft) },
+                onIndexChange = { detailedIndex = it },
+                onDone = { doneCount = it },
+                ledgerId = ledgerId,
+                onClose = close,
+            )
+        } else {
+            CompactOverlayBody(
+                drafts = draftsState,
+                ledgerId = ledgerId,
+                skipped = skipped,
+                onSkip = { index -> skipped = skipped + index },
+                onDraftChange = { index, draft -> changeDraft(index, draft) },
+                onDone = { doneCount = it },
+                onClose = close,
+            )
+        }
+    }
+}
+
+/** 简洁模式主体：只读预览行 + 行内补备注 + 逐笔剔除，一键全部记录 */
+@Composable
+private fun CompactOverlayBody(
+    drafts: List<BillDraft>,
+    ledgerId: String,
+    skipped: Set<Int>,
+    onSkip: (Int) -> Unit,
+    onDraftChange: (Int, BillDraft) -> Unit,
+    onDone: (Int) -> Unit,
+    onClose: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    // 卡片顶部可现场切换样式：详细 ↔ 简洁只换排版（已做的编辑保留），通知 = 收卡片改发超级岛。
-    // 切换写回偏好，下一次识屏直接按新样式弹。
-    var style by remember {
-        mutableStateOf(if (detailed) CapturePreferences.OVERLAY_DETAILED else CapturePreferences.OVERLAY_COMPACT)
-    }
-    val isDetailed = style == CapturePreferences.OVERLAY_DETAILED
-    var rows by remember(drafts) { mutableStateOf(drafts.take(COMPACT_MAX_ROWS)) }
-    val rest = remember(drafts) { drafts.drop(COMPACT_MAX_ROWS) }
-
-    // 详细版：独立卡片，严格按 Figma「详细版页面」还原（单笔逐条确认，保存后自动进下一笔）
-    if (isDetailed) {
-        DetailedOverlayCard(drafts = drafts, ledgerId = ledgerId, onDismiss = onDismiss)
-        return
-    }
-
+    val haptics = LocalHapticFeedback.current
     var writtenTotal by remember { mutableStateOf(0) }
     var allDone by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    /** 通知模式发送失败时提示留在卡片里，用户还能直接记录 */
-    var islandFailed by remember { mutableStateOf(false) }
-    /** 当前展开行内编辑的行下标 + 字段；null = 没有行在编辑 */
+    /** 当前展开行内编辑备注的行（真实下标）；null = 没有行在编辑 */
     var editingRow by remember { mutableStateOf<Int?>(null) }
-    var editingField by remember { mutableStateOf<String?>(null) }
 
-    // 组合付款候选账户：每次弹出加载一次（识屏多发生在支付完成后，库里账户基本不变）
-    var accounts by remember { mutableStateOf<List<String>>(emptyList()) }
-    LaunchedEffect(Unit) {
-        accounts = withContext(Dispatchers.IO) {
-            runCatching {
-                DbProvider.database.accountDao().getAllOnce().map { it.name }.filter { it.isNotBlank() }
-            }.getOrDefault(emptyList())
-        }
-    }
+    // 剔除只影响显示与写库：带真实下标配对，× 与备注编辑都能定位回原列表
+    val visible = drafts.mapIndexed { index, d -> index to d }.filter { it.first !in skipped }
+    val shown = visible.take(COMPACT_MAX_ROWS)
+    val overflow = visible.size - shown.size
 
     // 写完停一拍再收，让「已记 N 笔」被看见；比旧版的 1.2s 收得更快
     LaunchedEffect(allDone) {
         if (allDone) {
             delay(800)
-            onDismiss()
+            onClose()
         }
     }
 
     fun collapseEditing() {
-        if (editingField != null) {
-            editingField = null
+        if (editingRow != null) {
             editingRow = null
             BillOverlay.setWindowFocusable(false)
             BillOverlay.hideIme()
         }
     }
 
-    fun updateRow(index: Int, draft: BillDraft) {
-        rows = rows.mapIndexed { i, d -> if (i == index) draft else d }
-    }
-
-    fun writeAll() {
-        val list = rows + rest
-        if (busy || list.isEmpty()) return
-        collapseEditing()
-        busy = true
-        scope.launch {
-            val ok = QuickBillWriter.addDrafts(list, ledgerId)
-            busy = false
-            if (ok > 0) {
-                writtenTotal = ok
-                allDone = true
-            } else {
-                onDismiss()
-            }
-        }
-    }
-
-    /** 切到通知模式：收起卡片改发超级岛焦点通知；发不出去就留在卡片里提示直接记录 */
-    fun goIsland() {
-        if (busy) return
-        collapseEditing()
-        CapturePreferences.setOverlayStyle(context, CapturePreferences.OVERLAY_ISLAND)
-        busy = true
-        scope.launch {
-            val result = SuperIslandNotifier.sendReminder(
-                context,
-                "截屏识别完成",
-                "识别到 ${drafts.size} 笔账单，点击核对后再导入",
+    if (allDone) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "✓",
+                color = OverlayPalette.IncomeText,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
             )
-            busy = false
-            if (result.sent) onDismiss() else islandFailed = true
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "已记 $writtenTotal 笔到「$ledgerId」",
+                fontFamily = InterMedium,
+                fontSize = 15.sp,
+                color = OverlayPalette.Ink,
+            )
         }
+        return
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        cornerRadius = Radius.xxl,
-        colors = CardDefaults.defaultColors(MaterialTheme.colorScheme.surface),
-    ) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = when {
-                        allDone -> "已记 $writtenTotal 笔到「$ledgerId」"
-                        else -> "识别到 ${drafts.size} 笔"
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f),
-                )
-                if (allDone) {
-                    Text("✓", color = IncomeGreen, fontWeight = FontWeight.Medium)
+    shown.forEach { (index, draft) ->
+        CompactRow(
+            draft = draft,
+            editing = editingRow == index,
+            canSkip = visible.size > 1,
+            onUpdate = { onDraftChange(index, it) },
+            onEdit = {
+                if (editingRow == index) {
+                    collapseEditing()
+                } else {
+                    BillOverlay.setWindowFocusable(true)
+                    editingRow = index
                 }
-            }
+            },
+            onSkip = {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                collapseEditing()
+                onSkip(index)
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+    if (overflow > 0) {
+        Text(
+            text = "另有 $overflow 笔，进应用里核对",
+            fontSize = 11.5.sp,
+            color = OverlayPalette.Hint,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+    if (visible.isEmpty()) {
+        Text(
+            text = "识别结果已全部忽略",
+            fontSize = 11.5.sp,
+            color = OverlayPalette.Hint,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
 
-            if (!allDone) {
-                // ── 样式切换按钮：当场换排版或转超级岛，选择会被记住 ──
-                Row(
-                    modifier = Modifier.padding(top = 3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    listOf(
-                        CapturePreferences.OVERLAY_DETAILED to "详细",
-                        CapturePreferences.OVERLAY_COMPACT to "简洁",
-                        CapturePreferences.OVERLAY_ISLAND to "通知",
-                    ).forEach { (value, label) ->
-                        StyleChip(
-                            label = label,
-                            selected = style == value,
-                            onClick = {
-                                when (value) {
-                                    CapturePreferences.OVERLAY_ISLAND -> goIsland()
-                                    else -> {
-                                        collapseEditing()
-                                        style = value
-                                        CapturePreferences.setOverlayStyle(context, value)
-                                    }
-                                }
-                            },
-                        )
+    Spacer(Modifier.height(14.dp))
+    Row(Modifier.fillMaxWidth()) {
+        FooterButton(
+            text = if (visible.isEmpty()) "关闭" else "忽略",
+            modifier = Modifier.weight(1f),
+            container = Color.Transparent,
+            content = OverlayPalette.Secondary,
+            outlined = true,
+            enabled = true,
+            onClick = {
+                collapseEditing()
+                onClose()
+            },
+        )
+        Spacer(Modifier.width(12.dp))
+        FooterButton(
+            text = when {
+                busy -> "记录中…"
+                visible.isEmpty() -> "没有可记的"
+                else -> "记录全部 ${visible.size} 笔"
+            },
+            modifier = Modifier.weight(1.55f),
+            container = OverlayPalette.Accent,
+            content = OverlayPalette.OnAccent,
+            outlined = false,
+            enabled = !busy && visible.isNotEmpty(),
+            onClick = {
+                if (!busy && visible.isNotEmpty()) {
+                    collapseEditing()
+                    busy = true
+                    scope.launch {
+                        val ok = QuickBillWriter.addDrafts(visible.map { it.second }, ledgerId)
+                        busy = false
+                        if (ok > 0) {
+                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                            writtenTotal = ok
+                            allDone = true
+                            onDone(ok)
+                        } else {
+                            onClose()
+                        }
                     }
                 }
-                if (islandFailed) {
-                    Text(
-                        text = "超级岛通知没发出去，可直接在卡片里记录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-
-                Spacer(Modifier.height(6.dp))
-                rows.forEachIndexed { index, draft ->
-                    CompactRow(
-                        draft = draft,
-                        editing = editingRow == index && editingField == EDIT_NOTE,
-                        onUpdate = { updateRow(index, it) },
-                        onEdit = { editing ->
-                            if (editingRow == index) {
-                                collapseEditing()
-                            } else {
-                                BillOverlay.setWindowFocusable(true)
-                                editingRow = index
-                                editingField = EDIT_NOTE
-                            }
-                        },
-                    )
-                }
-                if (rows.size < drafts.size) {
-                    Text(
-                        text = "另有 ${drafts.size - rows.size} 笔，进应用里核对",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
-                }
-
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextButton(
-                        text = "忽略",
-                        onClick = {
-                            collapseEditing()
-                            onDismiss()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    Button(
-                        onClick = { writeAll() },
-                        colors = ButtonDefaults.buttonColorsPrimary(),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        val remain = rows.size + rest.size
-                        Text(if (busy) "记录中…" else "记录全部 $remain 笔")
-                    }
-                }
-            }
-        }
+            },
+        )
     }
 }
 
-/** 简洁模式的行：只读预览（分类 / 账户 / 日期 / 金额 / 备注），点击补改备注 */
+/**
+ * 简洁模式的行：分类图标 + 分类/重复标记 + 账户·日期·备注预览 + 语义色金额。
+ * 点击整行就地展开备注编辑；多笔时行尾 × 可剔除误识别的这笔。
+ */
 @Composable
 private fun CompactRow(
     draft: BillDraft,
     editing: Boolean,
+    canSkip: Boolean,
     onUpdate: (BillDraft) -> Unit,
-    onEdit: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onSkip: () -> Unit,
 ) {
-    Column(Modifier.padding(vertical = 5.dp)) {
+    val category = runCatching { CategoryCatalog.of(draft.categoryId) }.getOrNull()
+    Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onEdit(true) },
+                .heightIn(min = 56.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    if (editing) OverlayPalette.Accent.copy(alpha = 0.06f)
+                    else OverlayPalette.SurfaceRaised,
+                )
+                .border(
+                    1.dp,
+                    if (editing) OverlayPalette.Accent.copy(alpha = 0.45f)
+                    else OverlayPalette.CardBorder,
+                    RoundedCornerShape(14.dp),
+                )
+                .pressableScale(onClick = onEdit)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            CategoryIconImage(
+                name = category?.name ?: "分类",
+                color = category?.let { Color(it.color) } ?: OverlayPalette.PlaceholderDot,
+                size = 22.dp,
+                categoryId = draft.categoryId,
+            )
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = runCatching { CategoryCatalog.of(draft.categoryId).name }.getOrDefault("其他"),
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = category?.name ?: "其他",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 14.sp,
+                        color = OverlayPalette.Ink,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     if (draft.duplicateOfId != null) {
                         Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "疑似重复",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary,
-                        )
+                        DuplicateBadge()
                     }
                 }
                 val meta = listOf(draft.account, "${draft.date.monthValue}/${draft.date.dayOfMonth}")
                     .filter { it.isNotBlank() }
                     .joinToString(" · ")
-                if (meta.isNotBlank() || draft.note.isNotBlank()) {
+                val sub = listOf(meta, draft.note).filter { it.isNotBlank() }.joinToString(" · ")
+                if (sub.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
                     Text(
-                        text = listOf(meta, draft.note).filter { it.isNotBlank() }.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
+                        text = sub,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        fontSize = 11.sp,
+                        color = OverlayPalette.Secondary,
                     )
                 }
             }
-            val income = draft.type == TransactionType.INCOME
+            Spacer(Modifier.width(10.dp))
             Text(
-                text = (if (income) "+" else "-") +
-                    String.format(Locale.CHINA, "¥%.2f", draft.amountCents / 100.0),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = if (income) IncomeGreen else MaterialTheme.colorScheme.onSurface,
+                // 统一走带符号口径：支出 -10.00、收入 +10.00、转账 =10.00，与详细模式一致
+                text = OverlayFormat.amountLabel(draft),
+                fontFamily = InterMedium,
+                fontSize = 16.sp,
+                color = amountColor(draft.type),
             )
+            if (canSkip) {
+                Spacer(Modifier.width(2.dp))
+                // 28dp 命中区：悬浮窗空间有限，贴着 32dp 推荐下限的紧凑取舍
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onSkip),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(text = "×", fontSize = 16.sp, color = OverlayPalette.Tertiary)
+                }
+            }
         }
         if (editing) {
-            InlineNoteEditor(
+            Spacer(Modifier.height(6.dp))
+            NoteInlineEditor(
                 initial = draft.note,
                 onCommit = { note ->
                     onUpdate(draft.copy(note = note))
-                    onEdit(false)
+                    onEdit()
                 },
             )
         }
     }
 }
 
-/** 卡片顶部的样式切换小按钮：选中态主色浅底 */
+/** 「疑似重复」标记：橙色小胶囊，比灰字更难漏看 */
 @Composable
-private fun StyleChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun DuplicateBadge() {
     Text(
-        text = label,
-        style = MaterialTheme.typography.bodySmall,
-        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-        color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
+        text = "疑似重复",
+        fontSize = 9.5.sp,
+        color = OverlayPalette.WarningInk,
         modifier = Modifier
-            .clip(RoundedCornerShape(Radius.pill))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                else Color.Transparent,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 3.dp),
+            .clip(RoundedCornerShape(7.dp))
+            .background(OverlayPalette.WarningBg)
+            .padding(horizontal = 5.dp, vertical = 1.dp),
     )
 }
-
-/** 备注行内编辑：同金额编辑的焦点 / 输入法处理，上限 50 字 */
-@Composable
-private fun InlineNoteEditor(initial: String, onCommit: (String) -> Unit) {
-    var text by remember { mutableStateOf(initial) }
-    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(80)
-        runCatching { focusRequester.requestFocus() }
-        BillOverlay.showIme()
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        TextField(
-            value = text,
-            onValueChange = { text = it.take(50) },
-            modifier = Modifier
-                .weight(1f)
-                .focusRequester(focusRequester),
-            label = "备注",
-            useLabelAsPlaceholder = true,
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { onCommit(text.trim()) }),
-        )
-        Text(
-            text = "完成",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(Radius.pill))
-                .clickable { onCommit(text.trim()) }
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        )
-    }
-}
-

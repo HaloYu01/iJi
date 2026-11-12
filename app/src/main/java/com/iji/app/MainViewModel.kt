@@ -16,7 +16,8 @@ import com.iji.app.data.model.BudgetPeriodType
 import com.iji.app.data.model.BudgetProgress
 import com.iji.app.data.model.Currency
 import com.iji.app.data.model.CurrencyDisplay
-import com.iji.app.data.model.ImportRecord
+import com.iji.app.data.model.ImportBatch
+import com.iji.app.data.model.ImportPayload
 import com.iji.app.data.model.ReimburseState
 import com.iji.app.data.model.RecurrenceFreq
 import com.iji.app.data.model.RecurringRule
@@ -90,6 +91,27 @@ data class MonthUiState(
     val stats: Pair<Int, Long>,
     /** 计入预算的支出（剔除 excludeFromBudget），与收支统计独立 */
     val budgetExpenseCents: Long = 0L,
+    /**
+     * 是否已发出第一帧真实数据。与 [summaries] 在**同一次 StateFlow 发射**里到达：
+     * 页面用它区分「加载中」与「确实没有账单」，不用另设一个由上游查询置位的
+     * Boolean（那会先于下游聚合结果到达，冷启动就闪一下空态）。
+     */
+    val loaded: Boolean = false,
+)
+
+/**
+ * 退款溯源 / 退款候选的共享索引（由当前账本全量流水派生）。
+ *
+ * 首页与每个记一笔面板都要按 id 反查原账单、算已退金额、列最近支出候选。
+ * 这些计算原先散落在各 Composable 的 `remember(allTx)` 里，启动瞬间同一份数据
+ * 被遍历多遍且都在主线程；现在由 ViewModel 在 Default 线程算一次，多处只读。
+ */
+data class RefundView(
+    val byId: Map<Long, Transaction> = emptyMap(),
+    /** 原账单 id → 已退金额（分，正数，可能由多笔退款累加） */
+    val refundedBySource: Map<Long, Long> = emptyMap(),
+    /** 可退的正向支出，按写入顺序倒排（最近消费最可能被退） */
+    val candidates: List<Transaction> = emptyList(),
 )
 
 /**
@@ -127,9 +149,10 @@ class MainViewModel : ViewModel() {
 
     private companion object {
         /**
-         * MainViewModel 在 NavHost 里是**每个目的地各一份实例**（HomeScreen/AssetsScreen/CalendarScreen/StatsScreen…），
-         * 原先每份实例的 init 都要跑 4 次 seedIfEmpty + 2 次加载 + 周期记账，即每切进一个新 tab 就有
-         * 6+ 次串行 DB 往返 → 表现为"切页停顿一下"。播种与周期记账是进程级的幂等操作，只做一次即可。
+         * 早期 MainViewModel 在 NavHost 里是**每个目的地各一份实例**（HomeScreen/AssetsScreen/CalendarScreen/StatsScreen…），
+         * 每份 init 都要跑 seedIfEmpty + 加载 + 周期记账，切进一个新 tab 就有 6+ 次串行 DB 往返。
+         * 现在页面统一走 [com.iji.app.ui.util.sharedMainViewModel]（Activity 级一份），
+         * 这里仍保留进程级幂等标记：预览/测试或将来再次拆实例时不会重复播种。
          */
         private val seededOnce = java.util.concurrent.atomic.AtomicBoolean(false)
         private val recurringProcessedOnce = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -249,7 +272,7 @@ class MainViewModel : ViewModel() {
      *
      * 记录的是**跑过的每一次批量导入**：来源、文件名、目标账本、成功/失败条数。
      */
-    val importHistory: StateFlow<List<ImportRecord>> = importHistoryRepository.records
+    val importHistory: StateFlow<List<ImportBatch>> = importHistoryRepository.records
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** 新增资产账户（初始余额，分） */
@@ -377,8 +400,8 @@ class MainViewModel : ViewModel() {
     val ledgerInfos = mutableStateListOf<LedgerEntity>()
 
     /**
-     * 当前账本。**必须**走共享状态 [LedgerSelection]：各页面是独立的 ViewModel 实例，
-     * 各自持有一份会导致在一个页面切换账本、另一个页面完全看不到。
+     * 当前账本。**必须**走共享状态 [LedgerSelection]：MainViewModel 虽然已是全 App 一份，
+     * 但账本选择还要被通知接收器、悬浮窗等进程级组件读取，不能只存在 ViewModel 里。
      */
     val currentLedger: StateFlow<String> = LedgerSelection.current
 
@@ -557,8 +580,7 @@ class MainViewModel : ViewModel() {
 
 
     // 账本列表实时同步：持续订阅 Room，而不是开屏取一次快照。
-    // 各页面是独立 ViewModel 实例，只有订阅同一个 Flow 才能保证在管理页
-    // 新建 / 改名 / 删除账本后，主页下拉里的内容立刻跟着变。
+    // 这样在管理页新建 / 改名 / 删除账本后，主页下拉里的内容立刻跟着变。
     init {
         viewModelScope.launch {
             ledgerRepository.all.collect { infos ->
@@ -601,7 +623,22 @@ class MainViewModel : ViewModel() {
             // 账本过滤已下推到 SQL（observeByLedger + Index(ledgerId)）；
             // 这里的 flowOn 把「实体→模型」的映射挪出主线程（viewModelScope 默认 Main.immediate）
             .flowOn(Dispatchers.Default)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+            // 首屏数据：ViewModel 构造即开始订阅，不再等 Compose 首帧来 collect
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 退款索引：由 [transactions] 派生，Default 线程只算一次，首页与各记一笔面板共享 */
+    val refundView: StateFlow<RefundView> = transactions.map { list ->
+        RefundView(
+            byId = list.associateBy { it.id },
+            refundedBySource = list.filter { it.refundOfId != 0L }
+                .groupBy { it.refundOfId }
+                .mapValues { (_, refunds) -> refunds.sumOf { kotlin.math.abs(it.amountCents) } },
+            candidates = list.filter { it.type == TransactionType.EXPENSE && it.amountCents > 0L }
+                .sortedByDescending { it.id },
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RefundView())
 
     /**
      * 导出用：直接从库读当前账本全量流水。
@@ -620,6 +657,16 @@ class MainViewModel : ViewModel() {
             .filter { it.isNotBlank() }
             .groupingBy { it }
             .eachCount()
+
+    /**
+     * 标签管理下钻：带某个标签的全部账单（跨账本），Flow 自动响应增删改。
+     *
+     * 标签名即主键、账单的 `tags` 是逗号分隔串转出的 List，所以用成员判断精确匹配：
+     * `LIKE '%美食%'` 会把「美食券」也算进来。口径与 [tagUsageCounts] 一致（全库），
+     * 不能用 [transactions]（只含当前账本），否则列表笔数与标签页上的「N 笔在用」对不上。
+     */
+    fun transactionsByTag(tag: String): Flow<List<Transaction>> =
+        repository.transactions.map { list -> list.filter { tag in it.tags } }
 
     /** 账单读取失败后重试：自增 tick 重建 Room 订阅 */
     fun retryLoadTransactions() {
@@ -672,9 +719,9 @@ class MainViewModel : ViewModel() {
                     }
                     .map { month to it }
             }
-            // 首帧标记也要跟着这条流走：日历页只订阅按月数据、不订阅全量流水，
-            // 只由 transactions 置位会让它永远停在「加载中」
-            .onEach { _transactionsReady.value = true }
+
+    // 不在这里置任何「就绪」标志：查询返回 ≠ 聚合结果已发布。
+    // 就绪由 monthUiState.loaded 承载，与列表数据同一次发射到达。
 
     /** 当前月汇总（单次计算，首页/统计/日历共享，避免对交易表重复全量扫描） */
     val monthUiState: StateFlow<MonthUiState> =
@@ -708,11 +755,18 @@ class MainViewModel : ViewModel() {
                 expenseByCategory = expenseByCategory,
                 stats = expenseTxs.filter { !it.excludeFromStats }.count() to (if (statsExpense > 0L) statsExpense / month.lengthOfMonth() else 0L),
                 budgetExpenseCents = budgetExpense,
+                loaded = true,
             )
         }
             // 当月全量扫描 + 分组 + 聚合，不要在 Main 上做
             .flowOn(Dispatchers.Default)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MonthUiState(emptyList(), 0L, 0L, emptyList(), 0 to 0L))
+            // 首屏数据：构造即查询并缓存结果，Compose 首帧订阅时直接拿到已就绪数据。
+            // 初值 loaded=false：真实值与 loaded=true 同一次发射，加载态与空态不会混淆。
+            .stateIn(
+                viewModelScope,
+                SharingStarted.Eagerly,
+                MonthUiState(emptyList(), 0L, 0L, emptyList(), 0 to 0L, loaded = false),
+            )
 
     /** 当前月账单，按日期倒序分组成天（派生自 monthUiState） */
     val monthSummaries: StateFlow<List<DaySummary>> =
@@ -856,38 +910,40 @@ class MainViewModel : ViewModel() {
             return
         }
         viewModelScope.launch {
-            var ok = 0
             var failed = 0
             val ledger = targetLedger ?: currentLedger.value
+            val ids = mutableListOf<Long>()
+            val written = mutableListOf<Transaction>()
             drafts.forEach { draft ->
                 if (draft.amountCents == 0L) {
                     failed++
                     return@forEach
                 }
-                runCatching {
-                    persistNewTransaction(
-                        Transaction(
-                            id = 0L,
-                            type = draft.type,
-                            categoryId = draft.categoryId,
-                            amountCents = draft.amountCents,
-                            note = draft.note.trim(),
-                            // 用户在预览页选定的账户优先于草稿自带的（草稿那个是 OCR 猜的）
-                            account = account.ifBlank { draft.account },
-                            date = draft.date,
-                            ledgerId = ledger,
-                        )
-                    )
-                }.onSuccess { ok++ }.onFailure { failed++ }
+                val tx = Transaction(
+                    id = 0L,
+                    type = draft.type,
+                    categoryId = draft.categoryId,
+                    amountCents = draft.amountCents,
+                    note = draft.note.trim(),
+                    // 用户在预览页选定的账户优先于草稿自带的（草稿那个是 OCR 猜的）
+                    account = account.ifBlank { draft.account },
+                    date = draft.date,
+                    ledgerId = ledger,
+                )
+                runCatching { persistNewTransaction(tx) }
+                    .onSuccess { id -> ids += id; written += tx.copy(id = id) }
+                    .onFailure { failed++ }
             }
             importHistoryRepository.record(
                 source = "截屏批量导入",
                 fileName = "",
                 ledgerId = ledger,
-                okCount = ok,
+                okCount = ids.size,
                 failedCount = failed,
+                recordIds = ids,
+                payload = ImportPayload.encode(backupRepository.toBackupJson(written)),
             )
-            onResult(ok, failed)
+            onResult(ids.size, failed)
         }
     }
 
@@ -1423,21 +1479,17 @@ class MainViewModel : ViewModel() {
 
     // ── 导入（CSV / JSON）──
     // targetLedger：导入到哪本账。null = 当前账本。
-    // 导入页早已提供账本选择器，若不把它透传进来，用户以为导到「工作」其实导到了当前账本。
 
     /**
-     * 账单文件导入（通用 CSV / 微信 / 支付宝）：解析交给调用方在 IO 线程完成，这里只负责逐笔写入。
-     *
-     * 与旧的 `importCsv / importWeChatCsv / importAlipayCsv` 的区别：
-     * - 成功数来自**真实写入结果**，而不是「解析出多少条」的乐观计数（旧实现写失败也算成功）；
-     * - 单笔写失败（金额为 0 等）计入 failed，不再静默吞掉；
-     * - 逐笔带 `ledgerId`，导到指定账本时不会落到「当前账本」。
+     * 账单文件导入：逐笔写入，记下真实 id 与账单快照。
+     * 历史页的「撤销」靠 id 删除，「重新导入」靠快照重放，两者都只认真实写入结果。
      */
     fun importCsvTransactions(
         transactions: List<Transaction>,
         source: String,
         fileName: String = "",
         targetLedger: String? = null,
+        account: String = "",
         failedCount: Int = 0,
         onResult: (ok: Int, failed: Int) -> Unit,
     ) {
@@ -1447,79 +1499,133 @@ class MainViewModel : ViewModel() {
         }
         viewModelScope.launch {
             val ledger = targetLedger?.takeIf { it.isNotBlank() } ?: currentLedger.value
-            var ok = 0
             var failed = failedCount
+            val ids = mutableListOf<Long>()
+            val written = mutableListOf<Transaction>()
             transactions.forEach { tx ->
                 if (tx.amountCents == 0L) {
                     failed++
                     return@forEach
                 }
-                runCatching { persistNewTransaction(tx.copy(id = 0L, ledgerId = ledger)) }
-                    .onSuccess { ok++ }
+                val target = tx.copy(
+                    id = 0L,
+                    ledgerId = ledger,
+                    account = account.takeIf { it.isNotBlank() } ?: tx.account,
+                )
+                runCatching { persistNewTransaction(target) }
+                    .onSuccess { id -> ids += id; written += target.copy(id = id) }
                     .onFailure { failed++ }
             }
-            recordImport(source, fileName, ledger, ok, failed)
-            onResult(ok, failed)
-        }
-    }
-
-    fun importBackupJson(jsonStr: String, targetLedger: String? = null, fileName: String = "", onResult: (Int, Int) -> Unit) {
-        val r = backupRepository.parseBackupJson(jsonStr)
-        val fallback = targetLedger ?: currentLedger.value
-        r.transactions.forEach {
-            // 备份里带 ledgerId 就按原账本还原（跨账本恢复的关键）；老备份无该字段则回退到所选账本
-            addTransaction(
-                it.type, it.categoryId, it.amountCents, it.note, it.account, it.tags, it.date,
-                ledgerId = it.ledgerId.ifBlank { fallback },
-            )
-        }
-        recordImport("备份恢复", fileName, targetLedger, r)
-        onResult(r.transactions.size, r.failedCount)
-    }
-
-    /**
-     * 记一条导入历史。
-     *
-     * fire-and-forget：导入结果已经通过 onResult 返回给 UI，历史写入成败不该拖慢它，
-     * 失败也只在仓库里记日志。
-     */
-    private fun recordImport(
-        source: String,
-        fileName: String,
-        targetLedger: String?,
-        result: BackupRepository.ImportResult,
-    ) = recordImport(
-        source = source,
-        fileName = fileName,
-        ledgerId = targetLedger ?: currentLedger.value,
-        ok = result.transactions.size,
-        failed = result.failedCount,
-    )
-
-    /** 导入历史的落库（条数由调用方给出：CSV 路径用真实写入结果，备份恢复用解析结果） */
-    private fun recordImport(
-        source: String,
-        fileName: String,
-        ledgerId: String,
-        ok: Int,
-        failed: Int,
-    ) {
-        viewModelScope.launch {
             importHistoryRepository.record(
                 source = source,
                 fileName = fileName,
-                ledgerId = ledgerId,
-                okCount = ok,
+                ledgerId = ledger,
+                okCount = ids.size,
                 failedCount = failed,
+                recordIds = ids,
+                payload = ImportPayload.encode(backupRepository.toBackupJson(written)),
             )
+            onResult(ids.size, failed)
         }
     }
 
-    /** 清空导入记录（导入页「导入记录」里的清空；只删历史，不动账单） */
+    /** 备份 JSON 恢复：同样逐笔 await，才有真实成功数与可撤销的 id 列表。 */
+    fun importBackupJson(jsonStr: String, targetLedger: String? = null, fileName: String = "", onResult: (Int, Int) -> Unit) {
+        val r = backupRepository.parseBackupJson(jsonStr)
+        val fallback = targetLedger ?: currentLedger.value
+        viewModelScope.launch {
+            var failed = r.failedCount
+            val ids = mutableListOf<Long>()
+            val written = mutableListOf<Transaction>()
+            r.transactions.forEach { tx ->
+                // 备份里带 ledgerId 就按原账本还原（跨账本恢复的关键）；老备份无该字段则回退到所选账本
+                val target = tx.copy(id = 0L, ledgerId = tx.ledgerId.ifBlank { fallback })
+                runCatching { persistNewTransaction(target) }
+                    .onSuccess { id -> ids += id; written += target.copy(id = id) }
+                    .onFailure { failed++ }
+            }
+            importHistoryRepository.record(
+                source = "备份恢复",
+                fileName = fileName,
+                ledgerId = fallback,
+                okCount = ids.size,
+                failedCount = failed,
+                recordIds = ids,
+                payload = ImportPayload.encode(backupRepository.toBackupJson(written)),
+            )
+            onResult(ids.size, failed)
+        }
+    }
+
+    /** 清空导入记录（只删历史，不动账单） */
     fun clearImportHistory(onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val ok = runCatching { importHistoryRepository.clear() }.isSuccess
             onDone(ok)
+        }
+    }
+
+    /**
+     * 删除单条导入记录：只删 import_history 里的这一行。
+     *
+     * 不碰 transactions、不回滚余额、不改撤销状态；删掉后这批账单仍在账本里，
+     * 只是不再能通过历史页撤销或重放。
+     */
+    fun deleteImportBatch(batch: ImportBatch, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val ok = runCatching { importHistoryRepository.deleteById(batch.id) }.isSuccess
+            onResult(ok, if (ok) "已删除这条导入记录，已导入的账单不受影响" else "删除失败，请重试")
+        }
+    }
+
+    /** 撤销一批导入：跨账本按 id 取回 → 删除并回滚余额 → 标记批次（快照保留，仍可重新导入）。 */
+    fun undoImportBatch(batch: ImportBatch, onResult: (Boolean, String) -> Unit) {
+        if (!batch.canUndo) {
+            onResult(false, "这批账单已撤销，或旧记录没有可撤销的账单 id")
+            return
+        }
+        viewModelScope.launch {
+            val targets = runCatching { repository.byIds(batch.recordIds) }.getOrDefault(emptyList())
+            var result: DeleteBillsOutcome? = null
+            deleteAndRollback(targets) { result = it }
+            when (val r = result) {
+                is DeleteBillsOutcome.Success -> {
+                    importHistoryRepository.updateState(batch.id, emptyList(), true)
+                    onResult(true, "已撤销 ${r.count} 笔账单")
+                }
+                is DeleteBillsOutcome.Failure -> onResult(false, r.message)
+                else -> {
+                    importHistoryRepository.updateState(batch.id, emptyList(), true)
+                    onResult(true, "账单已不存在，已标记撤销")
+                }
+            }
+        }
+    }
+
+    /** 重新导入：用批次快照重建账单，并更新同一条历史的 id（不新增一批）。 */
+    fun reimportBatch(batch: ImportBatch, onResult: (Boolean, String) -> Unit) {
+        if (!batch.canReimport) {
+            onResult(false, "这条记录没有可重放的账单快照")
+            return
+        }
+        viewModelScope.launch {
+            val json = withContext(Dispatchers.IO) { ImportPayload.decode(batch.payload) }
+            val txs = runCatching { backupRepository.parseBackupJson(json).transactions }
+                .getOrElse {
+                    onResult(false, "快照已损坏，无法重新导入")
+                    return@launch
+                }
+            if (txs.isEmpty()) {
+                onResult(false, "快照里没有账单")
+                return@launch
+            }
+            val ids = mutableListOf<Long>()
+            txs.forEach { tx ->
+                runCatching { persistNewTransaction(tx.copy(id = 0L)) }
+                    .onSuccess { ids += it }
+            }
+            importHistoryRepository.updateState(batch.id, ids, false)
+            onResult(ids.isNotEmpty(), "已重新导入 ${ids.size} 笔账单")
         }
     }
 }

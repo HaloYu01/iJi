@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.sp
 import com.iji.app.data.model.Transaction
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
+import com.iji.app.ui.theme.ExpenseAmount
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.TextSecondary
 
@@ -23,21 +24,30 @@ import com.iji.app.ui.theme.TextSecondary
  *
  * 之前列表单击直接进编辑面板，手滑就改账（编辑面板保存即落库）；
  * 详情把「看」和「改」拆成两步，成本只有一次点击。
+ *
+ * [onEdit] 为 null 时是纯只读场景（标签 / 分类下钻），按钮换成「关闭」而不是
+ * 留一个点了没反应的「编辑」。
  */
 @Composable
 fun BillDetailDialog(
     tx: Transaction?,
     onDismiss: () -> Unit,
-    onEdit: (Transaction) -> Unit,
+    onEdit: ((Transaction) -> Unit)? = null,
 ) {
     val bill = tx
+    val editable = onEdit != null
     IjiDialog(
         show = bill != null,
         onDismissRequest = onDismiss,
         title = "账单详情",
         dismissText = "关闭",
-        confirmText = "编辑",
-        onConfirm = bill?.let { { onEdit(it) } },
+        confirmText = if (editable) "编辑" else "关闭",
+        showDismiss = editable,
+        onConfirm = bill?.let { b ->
+            {
+                if (editable) onEdit?.invoke(b) else onDismiss()
+            }
+        },
     ) {
         if (bill != null) BillDetailContent(bill)
     }
@@ -60,7 +70,12 @@ private fun BillDetailContent(tx: Transaction) {
             "$signed${formatMoney(tx.amountCents)}",
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
-            color = if (tx.type == TransactionType.INCOME) IncomeGreen else MaterialTheme.colorScheme.onSurface,
+            // 全局约定：消费红 / 收入绿，转账保持中性色
+            color = when (tx.type) {
+                TransactionType.INCOME -> IncomeGreen
+                TransactionType.EXPENSE -> ExpenseAmount
+                TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurface
+            },
         )
         DetailLine("分类", "${CategoryCatalog.of(tx.categoryId).name} · $typeLabel")
         DetailLine(

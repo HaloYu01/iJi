@@ -24,16 +24,22 @@ import kotlin.math.ceil
 
 internal class EdgeLightElement(
     val shape: androidx.compose.ui.graphics.Shape,
-    val edgeLight: () -> EdgeLight?
+    val edgeLight: () -> EdgeLight?,
+    /**
+     * 轮廓版本号；变化时强制重录 outline。给「同实例、轮廓逐帧变化」的动态 Shape 用
+     * （如底栏 BarShape 内部持有 draw 期 lambda），静态 Shape 传 null 走原有缓存。
+     */
+    val outlineRevision: (() -> Long)? = null
 ) : ModifierNodeElement<EdgeLightNode>() {
 
     override fun create(): EdgeLightNode {
-        return EdgeLightNode(shape, edgeLight)
+        return EdgeLightNode(shape, edgeLight, outlineRevision)
     }
 
     override fun update(node: EdgeLightNode) {
         node.shape = shape
         node.edgeLight = edgeLight
+        node.outlineRevision = outlineRevision
         node.invalidateOutlineCache()
         node.invalidateDraw()
     }
@@ -49,19 +55,22 @@ internal class EdgeLightElement(
         if (other !is EdgeLightElement) return false
         if (shape != other.shape) return false
         if (edgeLight != other.edgeLight) return false
+        if (outlineRevision != other.outlineRevision) return false
         return true
     }
 
     override fun hashCode(): Int {
         var result = shape.hashCode()
         result = 31 * result + edgeLight.hashCode()
+        result = 31 * result + outlineRevision.hashCode()
         return result
     }
 }
 
 internal class EdgeLightNode(
     var shape: androidx.compose.ui.graphics.Shape,
-    var edgeLight: () -> EdgeLight?
+    var edgeLight: () -> EdgeLight?,
+    var outlineRevision: (() -> Long)? = null
 ) : DrawModifierNode, Modifier.Node() {
 
     override val shouldAutoInvalidate: Boolean = false
@@ -89,6 +98,7 @@ internal class EdgeLightNode(
     private var recordedBlendMode: androidx.compose.ui.graphics.BlendMode? = null
     private var recordedShaderKey: String? = null
     private var recordedOutlineHashCode: Int = 0
+    private var recordedRevision: Long = Long.MIN_VALUE
     private var needsRecord = true
 
     // outline 只在 (shape, size, layoutDirection) 变化时重建：原来每帧都要重走一次路径构建
@@ -111,6 +121,15 @@ internal class EdgeLightNode(
         }
 
         drawContent()
+
+        // 动态 Shape（同实例、轮廓逐帧变）：版本号变了就作废缓存并强制重录。
+        // 放在 size 缓存之前，首次 draw 也会正确走到「无缓存」分支。
+        val revision = outlineRevision?.invoke() ?: Long.MIN_VALUE
+        val revisionChanged = revision != recordedRevision
+        if (revisionChanged) {
+            recordedRevision = revision
+            invalidateOutlineCache()
+        }
 
         val edgeLightLayer = edgeLightLayer
         if (edgeLightLayer != null) {
@@ -167,7 +186,8 @@ internal class EdgeLightNode(
             edgeLightLayer.blendMode = blendMode
 
             val outlineHashCode = outline.hashCode()
-            val paramsChanged = recordedOutlineHashCode != outlineHashCode
+            val paramsChanged = revisionChanged
+                    || recordedOutlineHashCode != outlineHashCode
                     || recordedSize != size
                     || recordedBlurRadius != blurRadius
                     || recordedStrokeWidth != strokeWidth
@@ -258,24 +278,28 @@ internal class EdgeLightNode(
 
 fun Modifier.edgeLight(
     shape: androidx.compose.ui.graphics.Shape,
-    edgeLight: EdgeLight = EdgeLight.Default
+    edgeLight: EdgeLight = EdgeLight.Default,
+    outlineRevision: (() -> Long)? = null
 ): Modifier {
     return this.then(
         EdgeLightElement(
             shape = shape,
-            edgeLight = { edgeLight }
+            edgeLight = { edgeLight },
+            outlineRevision = outlineRevision
         )
     )
 }
 
 fun Modifier.edgeLight(
     shape: androidx.compose.ui.graphics.Shape,
-    edgeLight: () -> EdgeLight? = { EdgeLight.Default }
+    edgeLight: () -> EdgeLight? = { EdgeLight.Default },
+    outlineRevision: (() -> Long)? = null
 ): Modifier {
     return this.then(
         EdgeLightElement(
             shape = shape,
-            edgeLight = edgeLight
+            edgeLight = edgeLight,
+            outlineRevision = outlineRevision
         )
     )
 }

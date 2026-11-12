@@ -1,10 +1,26 @@
-﻿plugins {
+﻿import java.util.Properties
+
+plugins {
     alias(libs.plugins.android.application)
     // AGP 9.0+ 已内置 Kotlin 支持，org.jetbrains.kotlin.android 插件自 9.0 起冗余且会直接报错，移除。
     // Compose 编译器仍由 kotlin.compose 插件提供。
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+// ── 正式签名 ──
+// release.jks / keystore.properties 都不进版本库，只在本机（和密钥保管处）存在。
+// 缺文件时 release 仍可构建为未签名包，避免别的机器 clone 后连编译都过不去；
+// 分发前务必确认产物已签名（apksigner verify）。
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }
+}
+val releaseKeystore = keystoreProperties.getProperty("storeFile")?.let { rootProject.file(it) }
+val hasReleaseSigning = releaseKeystore?.isFile == true &&
+    listOf("storePassword", "keyAlias", "keyPassword").all {
+        !keystoreProperties.getProperty(it).isNullOrBlank()
+    }
 
 android {
     namespace = "com.iji.app"
@@ -15,14 +31,26 @@ android {
     buildToolsVersion = "35.0.0"
 
     defaultConfig {
-        applicationId = "com.iji.app"
+        // 应用身份，2026-11-13 由 com.iji.app 迁来；namespace（代码包）不变
+        applicationId = "com.haloyu.iji"
         minSdk = 33
         // 36 = Live Updates（原生实况通知）最低 targetSdk；36 的行为变化只有预测性返回默认开启
         targetSdk = 36
         // 版本口径：versionName 与 AboutData.changelogData 的第一条必须对应；
         // 发布日期只记在更新日志里，页面通过 changelogOf(versionName) 取，不另设常量。
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.0.0"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -33,6 +61,22 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
+    // ABI 分包只给 release：ML Kit OCR 的 .so 有 4 个 ABI 共 39 MB，真机只加载当前 ABI，
+    // 打进同一个 universal 包纯属浪费。debug 不分包，保持单一 app-debug.apk 的既有交付路径。
+    // 仅在显式构建 release 时启用，避免 IDE sync / assembleDebug 改变产物形态。
+    val releaseRequested = gradle.startParameter.taskNames.any {
+        it.contains("Release", ignoreCase = true)
+    }
+    splits {
+        abi {
+            isEnable = releaseRequested
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
         }
     }
 
@@ -45,6 +89,8 @@ android {
         compose = true
         // Shizuku 的 shell 通道是 UserService：需要 AIDL 生成 IShizukuShell.Stub
         aidl = true
+        // 保留 BuildConfig 生成（调试判断与部分依赖仍会读 BuildConfig.DEBUG）
+        buildConfig = true
     }
 }
 
@@ -140,6 +186,12 @@ val fixAidlEncoding by tasks.registering {
         val root = layout.buildDirectory.dir("generated/aidl_source_output_dir").get().asFile
         if (!root.exists()) return@doLast
         root.walkTopDown().filter { it.isFile && it.extension == "java" }.forEach { file ->
+            // 防御：正常生成文件 ≤ 几十 KB；出现巨型文件必是 aidl 生成失控
+            //（2026-11-04 实测 release 变体写出过 1.08GB），直接删除待重新生成
+            if (file.length() > 5_000_000L) {
+                file.delete()
+                return@forEach
+            }
             val bytes = file.readBytes()
             // UTF-8 解码出现 U+FFFD 即说明文件不是合法 UTF-8（被工具按本地码页写出）
             if ('\uFFFD' in String(bytes, Charsets.UTF_8)) {

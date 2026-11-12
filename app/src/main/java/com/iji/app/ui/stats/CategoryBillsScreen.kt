@@ -41,12 +41,14 @@ import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.formatSignedMoney
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.mine.MineSubPage
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import java.time.LocalDate
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 统计页下钻：某个分类在指定区间内的账单列表。
@@ -61,7 +63,7 @@ fun CategoryBillsScreen(
     start: LocalDate,
     end: LocalDate,
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val allTransactions by app.transactions.collectAsStateWithLifecycle()
     val rows = remember(allTransactions, categoryId, start, end) {
@@ -130,7 +132,7 @@ private fun SummaryCard(
             CategoryIconImage(
                 name = category.name,
                 color = tint,
-                size = 38.dp,
+                size = IjiIconSize.ListRow,
                 categoryId = category.id,
             )
             Spacer(Modifier.width(12.dp))

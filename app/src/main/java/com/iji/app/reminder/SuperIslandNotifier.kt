@@ -145,6 +145,9 @@ object SuperIslandNotifier {
      *
      * @param hintTitle 底部横条的短文案（横条空间窄，过长必出省略号）
      * @param clickIntent 点击展开卡/横条时的跳转意图（同时用于按钮的 intent URI）
+     * @param islandActionTitle 岛按钮文案；与 [islandAction] 成对提供才生效
+     * @param islandAction 岛按钮的 PendingIntent（协议 3 真机验证的承载方式见下方实现；
+     *   识别结果的「确认记账」用广播，点按钮直接入账，不必回应用）
      * @param ongoing 进行中（不可滑动清除，靠 [cancel] 或超时结束）。识屏「正在识别」
      *   这类过程态用它：用户此刻在别的 App 上，岛是唯一的进度反馈，不能被误清除
      * @param islandTimeoutSeconds 岛存活秒数；过程态给短值（分钟级），
@@ -161,8 +164,18 @@ object SuperIslandNotifier {
         content: String,
         hintTitle: String,
         clickIntent: Intent,
+        islandActionTitle: String? = null,
+        islandAction: PendingIntent? = null,
         ongoing: Boolean = false,
         islandTimeoutSeconds: Int = 3600,
+        /** 大岛样式（官方模板 16 + islandProperty=2，展开卡片直接浮出）；默认普通岛 */
+        largeIsland: Boolean = false,
+        /** 大岛展开卡主体的多行明细；null = 用 [content]（单行） */
+        islandDetail: String? = null,
+        /** 大岛头部 / 底栏的摘要短句；null = 用 [hintTitle] */
+        islandSummary: String? = null,
+        /** 大岛左侧大图标（当前识别到的类别图标）；null = 用应用图标 */
+        islandIcon: Icon? = null,
     ): SendResult {
         ensureChannel(context, channelId, channelName, channelDesc)
 
@@ -175,32 +188,70 @@ object SuperIslandNotifier {
             clickIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val builder = Notification.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setContentIntent(pendingIntent)
-            // ongoing 与 autoCancel 语义互斥：进行中的岛由调用方撤下，点掉不该消失
-            .setAutoCancel(!ongoing)
-            // 不带时间戳、不同步到穿戴设备、同岛重复更新不重复响铃
-            .setShowWhen(false)
-            .setLocalOnly(true)
-            .setOnlyAlertOnce(true)
-        if (ongoing) {
-            builder.setOngoing(true)
-                .setCategory(Notification.CATEGORY_PROGRESS)
-                // 兜底：流程异常（进程被杀）时通知与岛一起过期，不留残影
-                .setTimeoutAfter(islandTimeoutSeconds * 1000L)
-        }
-        builder.addExtras(picsExtras(context))
 
-        val notification = builder.build()
+        // 岛按钮（协议 3）：按钮不在 JSON 参数里，而是 extras 的 `miui.focus.actions`
+        // Bundle（Maling-Island 真机验证的承载方式）。大岛（模板 16）的底栏按钮读
+        // `miui.focus.action_hint_v2`，普通岛读 `miui.focus.action_complete`——两个键都放。
+        val confirmAction = islandAction?.takeIf { level >= 3 }?.let {
+            Notification.Action.Builder(null, islandActionTitle ?: "确认", it).build()
+        }
+
+        fun buildIslandNotification(params: String): Notification {
+            val b = Notification.Builder(context, channelId)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setContentIntent(pendingIntent)
+                // ongoing 与 autoCancel 语义互斥：进行中的岛由调用方撤下，点掉不该消失
+                .setAutoCancel(!ongoing)
+                // 不带时间戳、不同步到穿戴设备、同岛重复更新不重复响铃
+                .setShowWhen(false)
+                .setLocalOnly(true)
+                .setOnlyAlertOnce(true)
+            if (ongoing) {
+                b.setOngoing(true)
+                    .setCategory(Notification.CATEGORY_PROGRESS)
+                    // 兜底：流程异常（进程被杀）时通知与岛一起过期，不留残影
+                    .setTimeoutAfter(islandTimeoutSeconds * 1000L)
+            }
+            b.addExtras(picsExtras(context, islandIcon.takeIf { largeIsland }))
+            if (confirmAction != null) {
+                b.addAction(confirmAction)
+                b.addExtras(
+                    Bundle().apply {
+                        putBundle(
+                            "miui.focus.actions",
+                            Bundle().apply {
+                                putParcelable("miui.focus.action_complete", confirmAction)
+                                if (largeIsland) {
+                                    putParcelable("miui.focus.action_hint_v2", confirmAction)
+                                }
+                            },
+                        )
+                    },
+                )
+            }
+            b.extras.putString("miui.focus.param", params)
+            return b.build()
+        }
+
         val clickUri = clickIntent.toUri(Intent.URI_INTENT_SCHEME)
         // 协议按设备选：HyperOS 3（focusProtocol = 3）只认 protocol 3 的模板，
         // 拿 protocol 1 发过去 SystemUI 会建出岛事件但**不渲染**（真机 logcat 实测：
         // DynamicIslandEventCoordinator 收到 UpdateDynamicIsland，屏幕上什么都没有）。
-        val params = if (level >= 3) {
-            islandParamsJsonV3(
+        val params = when {
+            level >= 3 && largeIsland -> islandParamsJsonV3Large(
+                title = title,
+                content = content,
+                detailContent = islandDetail ?: content,
+                summary = islandSummary ?: hintTitle,
+                businessTag = businessTag,
+                ticker = hintTitle,
+                islandTimeoutSeconds = islandTimeoutSeconds,
+                glowEnabled = isGlowEnabled(context),
+                clickTargetPage = MainActivity::class.java.name,
+            )
+            level >= 3 -> islandParamsJsonV3(
                 title = title,
                 content = content,
                 businessTag = businessTag,
@@ -208,8 +259,7 @@ object SuperIslandNotifier {
                 islandTimeoutSeconds = islandTimeoutSeconds,
                 glowEnabled = isGlowEnabled(context),
             )
-        } else {
-            islandParamsJson(
+            else -> islandParamsJson(
                 title = title,
                 content = content,
                 businessTag = businessTag,
@@ -219,7 +269,7 @@ object SuperIslandNotifier {
                 islandTimeoutSeconds = islandTimeoutSeconds,
             )
         }
-        notification.extras.putString("miui.focus.param", params)
+        val notification = buildIslandNotification(params)
 
         // 焦点通知需要过白名单：直发时校验在线执行、未过会回落普通通知（实测）；
         // Shizuku 可用时走断网窗口（100ms，真机实测有效口径），校验被跳过直接上岛。
@@ -273,9 +323,13 @@ object SuperIslandNotifier {
     /**
      * 岛上的图标：对齐 NexioSchedule，只备 4 个键、全部用桌面图标（岛参数只引用
      * pic_small / pic_small_dark，缩略岛显示应用图标）。
+     *
+     * 大岛（模板 16）另备「类别图标」键 `miui.focus.pic_category`（含 dark 同图）：
+     * 展开卡左侧大图标显示当前识别到的分类（彩色圆底 + 白线素材 / 首字徽标），
+     * 由调用方按识别结果合成（见 `categoryNotificationBitmap`）。
      * internal：现在只服务超级岛路径；原生实时通知刻意不再叠加焦点 extras。
      */
-    internal fun picsExtras(context: Context): Bundle = Bundle().apply {
+    internal fun picsExtras(context: Context, islandIcon: Icon? = null): Bundle = Bundle().apply {
         val icon = Icon.createWithResource(context, R.mipmap.ic_launcher)
         putBundle(
             "miui.focus.pics",
@@ -285,12 +339,16 @@ object SuperIslandNotifier {
                 putParcelable("miui.focus.pic_app_icon_dark", icon)
                 putParcelable("miui.focus.pic_small", icon)
                 putParcelable("miui.focus.pic_small_dark", icon)
-                // 协议 3 用的键（见 islandParamsJsonV3）；两套键同时带上，
+                // 协议 3 用的键（见 islandParamsJsonV3 / V3Large）；两套键同时带上，
                 // 系统按自己那代协议取用，多余的键会被忽略
                 putParcelable("miui.focus.pic_app", icon)
                 putParcelable("miui.focus.pic_icon_main", icon)
                 putParcelable("miui.focus.pic_ticker", icon)
                 putParcelable("miui.focus.pic_aod", icon)
+                if (islandIcon != null) {
+                    putParcelable("miui.focus.pic_category", islandIcon)
+                    putParcelable("miui.focus.pic_category_dark", islandIcon)
+                }
             },
         )
     }
@@ -478,6 +536,9 @@ object SuperIslandNotifier {
                         put("type", 2)
                         put("textInfo", JSONObject().apply {
                             put("title", title)
+                            // 大岛展开卡的副行带上正文（识别到几笔），一眼可读，不用点开通知
+                            put("content", content)
+                            put("colorContent", "#CCD3DD")
                             put("colorTitle", "#FFFFFF")
                             put("turnAnim", false)
                             put("narrowFont", false)
@@ -503,6 +564,139 @@ object SuperIslandNotifier {
                 put("colorTitleDark", "#FFFFFF")
                 put("colorContent", "#666666")
                 put("colorContentDark", "#AAAAAA")
+            })
+        }
+        return JSONObject().put("param_v2", paramV3).toString()
+    }
+
+    /**
+     * 协议 3 **大岛样式**参数：官方模板 16（新图文组件 + 识别图形组件 1 + 按钮组件 5），
+     * `islandProperty = 2` —— 岛以展开的大卡片形式浮出（普通岛 = 1 是小胶囊），
+     * 结构逐字段对齐 badnng/Hyper-pick-up-code 的 SuperIslandHelper.TEMPLATE_SIXTEEN
+     * （HyperOS 2/3 真机用户群充分验证）。
+     *
+     * **布局按信息层级分配**（保证可读性，每个区域各说各话、不复读）：
+     * - 展开卡主体（`iconTextInfo`）：标题 + 逐笔明细（[detailContent]，多行）；
+     * - 大岛浮出头部（`bigIslandArea.textInfo`）：标题 + 笔数摘要（[summary]，单行短句）；
+     * - 底栏（`hintInfo.title`）：同一摘要——用户扫一眼底栏就知道「几笔、待确认」；
+     * - 缩略岛 / 状态栏（`smallIslandArea` / `ticker`）：超短标题，不参与信息展示。
+     *
+     * 与普通岛 [islandParamsJsonV3] 的差别：
+     * - `islandProperty` 2（大）而非 1（小）；
+     * - `smallIslandArea` 用 `imageTextInfoRight`（type 6，文字+图标）而非纯 picInfo；
+     * - 多 `iconTextInfo`（展开卡的图文主体，含 animIconInfo 动效图标位）；
+     * - 多 `hintInfo`（type 1 底栏：状态文案 + 动作按钮）与 `smallWindowInfo`；
+     * - 底栏按钮的点击走 extras `miui.focus.action_hint_v2`（见 [sendIsland]），
+     *   不用协议 1 的 actionIntent URI。
+     *
+     * @param ticker 状态栏横条与 AOD 的短文案（过长会被截断）
+     * @param clickTargetPage 小窗口点击落地的 Activity 类名（参考项目的 targetPage）
+     */
+    internal fun islandParamsJsonV3Large(
+        title: String,
+        content: String,
+        detailContent: String,
+        summary: String,
+        businessTag: String,
+        ticker: String,
+        islandTimeoutSeconds: Int = 3600,
+        glowEnabled: Boolean = true,
+        clickTargetPage: String,
+    ): String {
+        val paramV3 = JSONObject().apply {
+            put("protocol", 3)
+            put("business", businessTag)
+            put("updatable", true)
+            put("ticker", ticker)
+            put("tickerPic", "miui.focus.pic_ticker")
+            put("enableFloat", true)
+            put("isShowNotification", true)
+            // 首次出现就浮出，不等用户下拉通知栏
+            put("islandFirstFloat", true)
+            put("timeout", islandTimeoutSeconds)
+            put("aodTitle", ticker)
+            put("aodPic", "miui.focus.pic_aod")
+            put("outEffectSrc", if (glowEnabled) "outer_glow" else "")
+
+            put("picInfo", JSONObject().apply {
+                put("pic", "miui.focus.pic_app")
+                put("type", 1)
+            })
+            // 小窗点击落地的页面（参考项目 targetPage = 主 Activity）
+            put("smallWindowInfo", JSONObject().apply {
+                put("targetPage", clickTargetPage)
+            })
+
+            put("param_island", JSONObject().apply {
+                put("islandProperty", 2)
+                put("islandOrder", false)
+                put("dismissIsland", false)
+                put("needCloseAnimation", true)
+                put("islandTimeout", islandTimeoutSeconds)
+                // 结构逐字段对齐**已验证能渲染**的版本（用户截图确认过）：左侧应用图标 +
+                // 右侧标题/摘要；smallIslandArea 纯 picInfo。模板 16 组件位校验严格，
+                // 缺 imageTextInfoLeft / 换 type 6+4 变体都会整条岛不渲染（实测教训）
+                put("bigIslandArea", JSONObject().apply {
+                    put("imageTextInfoLeft", JSONObject().apply {
+                        put("type", 1)
+                        put("picInfo", JSONObject().apply {
+                            put("type", 1)
+                            put("pic", "miui.focus.pic_app")
+                        })
+                    })
+                    put("imageTextInfoRight", JSONObject().apply {
+                        put("type", 2)
+                        put("textInfo", JSONObject().apply {
+                            put("title", title)
+                            put("content", summary)
+                            put("colorContent", "#CCD3DD")
+                            put("colorTitle", "#FFFFFF")
+                            put("turnAnim", false)
+                            put("narrowFont", false)
+                            put("showHighlightColor", false)
+                        })
+                    })
+                })
+                put("smallIslandArea", JSONObject().apply {
+                    put("picInfo", JSONObject().apply {
+                        put("type", 1)
+                        put("pic", "miui.focus.pic_app")
+                    })
+                })
+            })
+
+            // 展开卡图文主体：左侧图标 = 当前识别到的**类别图标**（animIconInfo 保持
+            // 已验证的 type 3，src 换类别键；此前误改 type 0 双态属未验证变体），
+            // 标题 + 逐笔明细（多行，readability 的核心载体）
+            put("iconTextInfo", JSONObject().apply {
+                put("animIconInfo", JSONObject().apply {
+                    put("type", 3)
+                    put("src", "miui.focus.pic_category")
+                })
+                put("title", title)
+                put("content", detailContent)
+                put("colorTitle", "#111111")
+                put("colorTitleDark", "#FFFFFF")
+                put("colorContent", "#666666")
+                put("colorContentDark", "#AAAAAA")
+            })
+
+            // 底栏：笔数摘要 + 动作按钮（按钮点击走 extras miui.focus.action_hint_v2）
+            put("hintInfo", JSONObject().apply {
+                put("type", 1)
+                put("title", summary)
+                put("colorTitle", "#000000")
+                put("colorTitleDark", "#FFFFFF")
+                put("colorContent", "#666666")
+                put("colorContentDark", "#AAAAAA")
+                put("actionInfo", JSONObject().apply {
+                    put("action", "miui.focus.action_hint_v2")
+                    put("actionTitle", "查看")
+                    put("actionTitleColor", "#FFFFFF")
+                    put("actionTitleColorDark", "#FFFFFF")
+                    put("actionBgColor", "#3482FF")
+                    put("actionBgColorDark", "#3482FF")
+                })
             })
         }
         return JSONObject().put("param_v2", paramV3).toString()

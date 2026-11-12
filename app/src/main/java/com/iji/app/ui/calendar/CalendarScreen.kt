@@ -22,6 +22,8 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,8 +44,10 @@ import com.iji.app.ui.components.StateView
 import com.iji.app.ui.components.TransactionRow
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.ijiTopBarRecordHeight
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.iji.app.ui.components.topbar.topBarContentInset
+import com.iji.app.ui.theme.ExpenseAmount
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
@@ -54,6 +58,13 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import java.time.LocalDate
 import java.time.YearMonth
+import com.iji.app.ui.util.sharedMainViewModel
+
+/** [LocalDate] 的 saveable 编解码：ISO-8601 字符串原样往返（用于记住日历选中日）。 */
+private val LocalDateSaver = Saver<LocalDate, String>(
+    save = { it.toString() },
+    restore = LocalDate::parse,
+)
 
 /**
  * 日历页：月份卡（可横滑切月）+ 选中日汇总与账单。
@@ -64,14 +75,16 @@ import java.time.YearMonth
 @Composable
 fun CalendarScreen(
     onNavigateMine: () -> Unit = {},
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
-    val monthSummaries by viewModel.monthSummaries.collectAsStateWithLifecycle()
+    val monthState by viewModel.monthUiState.collectAsStateWithLifecycle()
+    val monthSummaries = monthState.summaries
     val selectedMonth by viewModel.selectedMonth.collectAsStateWithLifecycle()
 
     val today = LocalDate.now()
-    // 选中的日期，默认今天
-    var selectedDate by remember { mutableStateOf(today) }
+    // 选中的日期，默认今天；saveable：切 tab 往返（含进程重建）后保持所选日期，
+    // 否则回来总是弹回「今天」，下方汇总卡也跟着变。
+    var selectedDate by rememberSaveable(stateSaver = LocalDateSaver) { mutableStateOf(today) }
     // 切月后把选中日收敛到目标月（保持同一天号，越界取月末）。
     // 不做这一步，切月后日历上没有高亮、下方会误报「当天没有账单」。
     LaunchedEffect(selectedMonth) {
@@ -90,17 +103,13 @@ fun CalendarScreen(
     var detailTx by remember { mutableStateOf<Transaction?>(null) }
     // 编辑面板：与账本页同一套面板与回调
     var editTx by remember { mutableStateOf<Transaction?>(null) }
-    // 「当天没有账单」空态里的「记一笔」：带上选中日期，避免记到别的日子
-    var addDate by remember { mutableStateOf<LocalDate?>(null) }
-    // 首帧未就绪时不给「当天没有账单」，否则冷启动会误报空态
-    val transactionsReady by viewModel.transactionsReady.collectAsStateWithLifecycle()
-
     // ── 固定顶栏（浮层）：与其它三页一致的折叠横栏 ──
     val listState = rememberLazyListState()
     val topBarSurface = MaterialTheme.colorScheme.background
     val topBarBackdrop = rememberLayerBackdrop { drawRect(topBarSurface); drawContent() }
     // 顶栏采样层节流：滚动中才重录，静止不录、不重跑顶栏模糊 shader
-    val topBarMustRecord = remember(listState) { { listState.isScrollInProgress } }
+    val topBarRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val topBarMustRecord = remember(listState) { { topBarRecordGate.shouldRecord(listState.isScrollInProgress) } }
     val listScrolled by remember {
         derivedStateOf {
             listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
@@ -119,7 +128,7 @@ fun CalendarScreen(
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .then(
                     if (listScrolled) {
-                        Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord)
+                        Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord, recordHeight = ijiTopBarRecordHeight())
                     } else {
                         Modifier
                     }
@@ -138,7 +147,7 @@ fun CalendarScreen(
                     summaries = monthSummaries,
                     selectedDate = selectedDate,
                     today = today,
-                    ready = transactionsReady,
+                    ready = monthState.loaded,
                     onSelectDate = { selectedDate = it },
                     onMonthChange = { viewModel.setMonth(it) },
                 )
@@ -149,9 +158,8 @@ fun CalendarScreen(
                     date = selectedDate,
                     today = today,
                     summary = daySummary,
-                    ready = transactionsReady,
+                    ready = monthState.loaded,
                     onBillClick = { detailTx = it },
-                    onAddBill = { addDate = selectedDate },
                 )
             }
         }
@@ -206,13 +214,6 @@ fun CalendarScreen(
             editTx = null
         },
     )
-
-    // 新增：空态里的「记一笔」把选中日期带进面板（onConfirm 为 null 时面板自己写库）
-    AddTransactionSheet(
-        show = addDate != null,
-        onDismiss = { addDate = null },
-        prefillDate = addDate,
-    )
 }
 
 /** 选中日：日期标题 + 收/支/余胶囊 + 当天账单（空则给空态） */
@@ -223,7 +224,6 @@ private fun DayBillsCard(
     summary: DaySummary?,
     ready: Boolean,
     onBillClick: (Transaction) -> Unit,
-    onAddBill: () -> Unit,
 ) {
     val income = summary?.incomeCents ?: 0L
     val expense = summary?.expenseCents ?: 0L
@@ -255,7 +255,8 @@ private fun DayBillsCard(
                     // 首帧未就绪时用占位符，避免瞬间显示收/支/余都是 0
                     val money = { cents: Long -> if (ready) formatMoney(cents) else "—" }
                     SummaryPill("收", money(income), IncomeGreen)
-                    SummaryPill("支", money(expense), MaterialTheme.colorScheme.primary)
+                    // 全局约定：消费红色
+                    SummaryPill("支", money(expense), ExpenseAmount)
                     SummaryPill("余", money(income - expense), TextSecondary)
                 }
             }
@@ -271,7 +272,6 @@ private fun DayBillsCard(
                         state = ContentState.Empty("当天没有账单"),
                         areaVerticalPadding = 14.dp,
                     )
-                    IjiTextAction(text = "记一笔", onClick = onAddBill, compact = true)
                     Spacer(Modifier.height(10.dp))
                 }
             } else {

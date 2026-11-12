@@ -17,24 +17,43 @@ class AboutDataTest {
 
     private val versionPattern = Regex("""^v\d+\.\d+\.\d+$""")
     private val datePattern = Regex("""^\d{4}-\d{2}-\d{2}$""")
+    private val versionRangePattern = Regex("""^v\d+\.\d+\.\d+ Beta → v\d+\.\d+\.\d+ Beta$""")
 
     @Test
     fun changelogVersionAndDateAreNormalized() {
         changelogData.forEach { entry ->
-            assertTrue("版本号格式应为 vX.Y.Z，实际 ${entry.version}", versionPattern.matches(entry.version))
-            assertTrue("日期格式应为 yyyy-MM-dd，实际 ${entry.date}", datePattern.matches(entry.date))
+            if (entry.version.contains("→")) {
+                // 开发记录是归档条目：版本号记区间，日期记起止两段
+                assertTrue(
+                    "开发记录版本应为 Beta 区间，实际 ${entry.version}",
+                    versionRangePattern.matches(entry.version),
+                )
+                val range = entry.date.split(" ~ ")
+                assertEquals("开发记录日期应为起止两段：${entry.date}", 2, range.size)
+                range.forEach { part ->
+                    assertTrue("日期格式应为 yyyy-MM-dd，实际 $part", datePattern.matches(part))
+                }
+            } else {
+                assertTrue("版本号格式应为 vX.Y.Z，实际 ${entry.version}", versionPattern.matches(entry.version))
+                assertTrue("日期格式应为 yyyy-MM-dd，实际 ${entry.date}", datePattern.matches(entry.date))
+            }
             assertTrue("${entry.version} 至少要有一条变更", entry.items.isNotEmpty())
-            assertTrue("${entry.version} 缺少一句话概览", entry.summary.isNotBlank())
-            entry.items.forEach { item ->
-                assertTrue("${entry.version} 有空白变更条目", item.text.isNotBlank())
-                assertTrue("${entry.version} 的条目不该带列表符号", !item.text.startsWith("·"))
+            entry.items.forEach { line ->
+                assertTrue("${entry.version} 有空白变更条目", line.isNotBlank())
+                assertTrue("${entry.version} 的条目不该带列表符号", !line.startsWith("·"))
+                // 去掉了「新增/修复/优化」标签后，正文里也不能再用这类前缀开头
+                assertTrue(
+                    "${entry.version} 的条目不该以类型标签开头：$line",
+                    listOf("新增", "修复", "优化", "调整", "文档").none { line.startsWith(it) },
+                )
             }
         }
     }
 
     @Test
     fun changelogIsSortedNewestFirst() {
-        val dates = changelogData.map { it.date }
+        // 归档条目按区间结束日参与排序，避免区间字符串把顺序比歪
+        val dates = changelogData.map { it.date.substringAfterLast(" ~ ") }
         assertEquals("更新日志必须由新到旧", dates.sortedDescending(), dates)
 
         val versions = changelogData.map { it.version }
@@ -64,13 +83,15 @@ class AboutDataTest {
     }
 
     @Test
-    fun thanksItemsAreDistinctFromLicenseList() {
+    fun thanksItemsOnlyCarryNameAuthorAndRepo() {
         val thanksNames = thanksData.map { it.name }
         assertEquals("致谢条目不应重复", thanksNames.size, thanksNames.toSet().size)
 
-        // 依赖库的许可证在许可页单独声明；致谢里出现依赖时也要带上许可证
-        thanksData.filter { it.contribution.contains("依赖库") }.forEach {
-            assertTrue("${it.name} 是依赖库，致谢里应标许可证", it.license.isNotBlank())
+        thanksData.forEach { item ->
+            assertTrue("${item.name} 缺少作者", item.author.isNotBlank())
+            assertTrue("${item.name} 缺少仓库地址", item.url.startsWith("https://"))
+            assertTrue("${item.name} 不应再带贡献说明", item.contribution.isBlank())
+            assertTrue("${item.name} 不应再带许可证标注", item.license.isBlank())
         }
     }
 

@@ -2,14 +2,11 @@ package com.iji.app.ui.overlay
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -52,18 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -72,7 +64,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.iji.app.R
 import com.iji.app.ai.BillDraft
 import com.iji.app.data.db.DbProvider
 import com.iji.app.data.model.Category
@@ -96,33 +87,48 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 import java.time.DayOfWeek
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.YearMonth
 
 /**
- * 「详细版」悬浮卡片 —— 按 Figma 设计稿（927 × 607）还原，配色跟 app 主色统一（冷蓝）。
+ * 「详细版」悬浮卡内容 —— 按 Figma 设计稿（927 × 607）还原，配色跟 app 主色统一（冷蓝）。
+ * 卡片外壳（渐变底 / 描边 / 出退场动效）与品牌行由 [OverlayShell] / [OverlayBrandRow]
+ * 在父层提供，这里只负责字段区与底部按钮。
  *
  * ## 尺寸口径
  * 卡片自身用**固定 dp**（不乘设计稿 scale）：悬浮窗宽度固定为屏宽 − 24dp，
  * 固定 dp 在任何屏宽下都保持可读、可点，不会被压成 8sp 小字。
  *
  * ## 与设计稿的差异（刻意）
- * 1. 设计稿只画了单笔；多笔时右上角补一个 `1/3`，保存逐笔推进。
+ * 1. 设计稿只画了单笔；多笔时父层顶部有进度条，保存/跳过逐笔推进。
  * 2. 展开编辑区（金额/备注键盘、分类/账户/日期/标签面板）在稿里没有 —— 这部分按「少滑动」重做：
  *    账户、分类、日期全部走**横向宫格 / 横向一级条**，面板高度固定，卡框与按钮位置不动。
  * 3. 稿中圆形是占位：账户用真实素材图标，分类填真实分类色。
+ *
+ * ## 编辑状态归属（关键）
+ * [BillDraft] 本体由父层持有：本卡每次修改都通过 [onDraftChange] 写回，
+ * 这样「详细 ↔ 简洁」切换排版时，已改的金额/分类/账户/备注/日期都不会丢；
+ * 转入账户、勾选项、标签、时分是逐笔的辅助状态，留在卡内（切走再回来重置为默认，可接受）。
  */
 @Composable
 internal fun DetailedOverlayCard(
     drafts: List<BillDraft>,
+    initialIndex: Int,
+    onDraftChange: (Int, BillDraft) -> Unit,
+    onIndexChange: (Int) -> Unit,
+    onDone: (Int) -> Unit,
     ledgerId: String,
-    onDismiss: () -> Unit,
+    onClose: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
 
-    var index by remember(drafts) { mutableIntStateOf(0) }
-    var draft by remember(drafts) { mutableStateOf(drafts.first()) }
+    // 跨样式切换保留进度：index 由父层持有，这里只在首次组合时取初值
+    var index by remember {
+        mutableIntStateOf(initialIndex.coerceIn(0, (drafts.size - 1).coerceAtLeast(0)))
+    }
+    /** 当前笔 = 父层列表的对应项；样式切换回来也能拿到改过的值 */
+    val draft = drafts[index.coerceAtMost((drafts.size - 1).coerceAtLeast(0))]
     /** 转账的转入账户（[BillDraft] 只有转出账户） */
     var transferTo by remember { mutableStateOf("") }
     var excludeFromBudget by remember { mutableStateOf(false) }
@@ -132,11 +138,19 @@ internal fun DetailedOverlayCard(
     var busy by remember { mutableStateOf(false) }
     var writtenCount by remember { mutableIntStateOf(0) }
     var finished by remember { mutableStateOf(false) }
+    /** 忽略整卡的二次确认：第一次点击只进入确认态，超时自动退出 */
+    var confirmDiscard by remember { mutableStateOf(false) }
     /** 当天的第几分钟；默认取此刻 —— 识屏多发生在刚付完款，时分基本就是真实时间 */
-    var minuteOfDay by remember(drafts) { mutableIntStateOf(nowMinuteOfDay()) }
+    var minuteOfDay by remember { mutableIntStateOf(nowMinuteOfDay()) }
 
     var accounts by remember { mutableStateOf<List<AccountOption>>(emptyList()) }
     var tagPool by remember { mutableStateOf(TagStore.DEFAULT) }
+
+    /** 统一修改当前笔：写回父层，让「详细 ↔ 简洁」共享同一份编辑 */
+    fun updateDraft(transform: (BillDraft) -> BillDraft) {
+        val i = index.coerceAtMost((drafts.size - 1).coerceAtLeast(0))
+        onDraftChange(i, transform(drafts[i]))
+    }
 
     LaunchedEffect(Unit) {
         accounts = withContext(Dispatchers.IO) {
@@ -148,15 +162,26 @@ internal fun DetailedOverlayCard(
         }
         tagPool = runCatching { TagStore.observe(context).first() }.getOrDefault(TagStore.DEFAULT)
         transferTo = accounts.firstOrNull()?.name.orEmpty()
-        if (draft.account.isBlank()) {
-            draft = draft.copy(account = accounts.firstOrNull()?.name.orEmpty())
+        // 识别没给出账户时补默认：同样走父层写回，保证两个模式看到一致的数据
+        if (draft.account.isBlank() && accounts.isNotEmpty()) {
+            updateDraft { it.copy(account = accounts.first().name) }
         }
     }
 
+    // 保存完最后一笔：让「已记 N 笔」被看见再收卡
     LaunchedEffect(finished) {
         if (finished) {
+            onDone(writtenCount)
             delay(800)
-            onDismiss()
+            onClose()
+        }
+    }
+
+    // 「确认忽略？」只在短时间内有效，超时自动退回普通按钮，避免误触窗口开太久
+    LaunchedEffect(confirmDiscard) {
+        if (confirmDiscard) {
+            delay(2600)
+            confirmDiscard = false
         }
     }
 
@@ -171,6 +196,23 @@ internal fun DetailedOverlayCard(
             BillOverlay.setWindowFocusable(true)
         }
         editing = if (editing == field) null else field
+    }
+
+    /** 推进到下一笔（保存成功或主动跳过都走这里）；最后一笔则进入完成态 */
+    fun advance() {
+        if (index + 1 < drafts.size) {
+            index += 1
+            onIndexChange(index)
+            transferTo = accounts.firstOrNull()?.name.orEmpty()
+            selectedTags = emptyList()
+            excludeFromBudget = false
+            includeAsset = true
+            editing = null
+            confirmDiscard = false
+            minuteOfDay = nowMinuteOfDay()
+        } else {
+            finished = true
+        }
     }
 
     fun commit() {
@@ -195,387 +237,343 @@ internal fun DetailedOverlayCard(
             }
             busy = false
             if (!ok) return@launch
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
             writtenCount += 1
-            if (index + 1 < drafts.size) {
-                index += 1
-                draft = drafts[index]
-                transferTo = accounts.firstOrNull()?.name.orEmpty()
-                selectedTags = emptyList()
-                excludeFromBudget = false
-                includeAsset = true
-                editing = null
-                minuteOfDay = nowMinuteOfDay()
-            } else {
-                finished = true
-            }
+            advance()
         }
     }
-
-    val cardShape = RoundedCornerShape(26.dp)
-
-    // 出现动效：轻微上浮 + 淡入，避免悬浮窗"啪"地砸出来
-    var appeared by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { appeared = true }
-    val appearAlpha by animateFloatAsState(
-        targetValue = if (appeared) 1f else 0f,
-        animationSpec = tween(180),
-        label = "cardAlpha",
-    )
-    val appearOffset by animateDpAsState(
-        targetValue = if (appeared) 0.dp else (-10).dp,
-        animationSpec = tween(220),
-        label = "cardY",
-    )
 
     // 金额 / 备注是**行内编辑**，不占展开区；只有下面这几项才把中部整块换成选择面板。
     // 之前这里直接拿 `editing` 当 AnimatedContent 的 key，点备注时中部会切到空分支，
     // 整个字段区瞬间变空白 —— 就是"点备注显示异常"的根因。
     val panel = editing?.takeIf { it.isPanel() }
 
-    // 外层留 6dp 给阴影：窗口宽 = 屏宽 − 24dp，不留白的话左右阴影会被窗口边界切掉
-    Box(Modifier.fillMaxWidth().padding(6.dp)) {
-        Column(
-            Modifier
-                .offset(y = appearOffset)
-                .graphicsLayer { alpha = appearAlpha }
-                .fillMaxWidth()
-                .shadow(elevation = 8.dp, shape = cardShape, clip = false)
-                .clip(cardShape)
-                .background(Brush.verticalGradient(OverlayPalette.CardGradient))
-                .border(1.dp, Color.White.copy(alpha = 0.75f), cardShape)
-                .padding(horizontal = 16.dp)
-                .padding(top = 14.dp, bottom = 12.dp),
-        ) {
-            // ── 顶部：logo + i记（+ 多笔序号） ──
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painter = painterResource(R.drawable.ic_iji_logo),
-                    contentDescription = "i记",
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                )
-                Spacer(Modifier.width(9.dp))
+    Column(Modifier.fillMaxWidth()) {
+        // ── 金额 + 类型 ──
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (finished) {
                 Text(
-                    text = "i记",
-                    maxLines = 1,
+                    text = "已记 $writtenCount 笔",
                     style = TextStyle(
-                        fontFamily = ActorFamily,
-                        fontSize = 17.sp,
-                        letterSpacing = 0.2.sp,
-                        color = OverlayPalette.Ink,
+                        fontFamily = InterMedium,
+                        fontSize = 24.sp,
+                        color = OverlayPalette.Accent,
                     ),
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.weight(1f))
-                if (drafts.size > 1) {
-                    Text(
-                        text = "${index + 1}/${drafts.size}",
-                        style = TextStyle(
-                            fontFamily = InterRegular,
-                            fontSize = 10.5.sp,
-                            color = OverlayPalette.Secondary,
-                        ),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(OverlayPalette.Accent.copy(alpha = 0.08f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // ── 金额 + 类型 ──
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (finished) {
-                    Text(
-                        text = "已记 $writtenCount 笔",
-                        style = TextStyle(
-                            fontFamily = InterMedium,
-                            fontSize = 24.sp,
-                            color = OverlayPalette.Accent,
-                        ),
-                        modifier = Modifier.weight(1f),
-                    )
-                } else {
-                    Box(Modifier.weight(1f).clickable { startEditing(OverlayField.Amount) }) {
-                        if (editing == OverlayField.Amount) {
-                            AmountInlineEditor(
-                                initialCents = draft.amountCents,
-                                color = amountColor(draft.type),
-                                onCommit = { cents ->
-                                    draft = draft.copy(amountCents = cents)
-                                    stopEditing()
+            } else {
+                Box(Modifier.weight(1f).clickable { startEditing(OverlayField.Amount) }) {
+                    if (editing == OverlayField.Amount) {
+                        AmountInlineEditor(
+                            initialCents = draft.amountCents,
+                            color = amountColor(draft.type),
+                            onCommit = { cents ->
+                                updateDraft { it.copy(amountCents = cents) }
+                                stopEditing()
+                            },
+                        )
+                    } else {
+                        Text(
+                            // 金额为 0（识别失败兜底）时给明确指引，别让 "-0.00" 假装是数据
+                            text = if (draft.amountCents == 0L) "待输入" else OverlayFormat.amountLabel(draft),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = TextStyle(
+                                fontFamily = InterMedium,
+                                fontSize = 31.sp,
+                                letterSpacing = (-0.6).sp,
+                                color = if (draft.amountCents == 0L) {
+                                    OverlayPalette.Hint
+                                } else {
+                                    amountColor(draft.type)
                                 },
-                            )
-                        } else {
-                            Text(
-                                text = OverlayFormat.amountLabel(draft),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = TextStyle(
-                                    fontFamily = InterMedium,
-                                    fontSize = 31.sp,
-                                    letterSpacing = (-0.6).sp,
-                                    color = amountColor(draft.type),
-                                ),
-                            )
-                        }
+                            ),
+                        )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    TypePill(
-                        type = draft.type,
-                        onClick = {
-                            stopEditing()
-                            val next = when (draft.type) {
-                                TransactionType.EXPENSE -> TransactionType.INCOME
-                                TransactionType.INCOME -> TransactionType.TRANSFER
-                                TransactionType.TRANSFER -> TransactionType.EXPENSE
-                            }
-                            val fallback = when (next) {
-                                TransactionType.INCOME -> CategoryCatalog.incomes
-                                TransactionType.TRANSFER -> CategoryCatalog.transfers
-                                else -> CategoryCatalog.expenses
-                            }.firstOrNull()?.id.orEmpty()
-                            draft = draft.copy(
+                }
+                Spacer(Modifier.width(8.dp))
+                TypePill(
+                    type = draft.type,
+                    onClick = {
+                        stopEditing()
+                        confirmDiscard = false
+                        val next = when (draft.type) {
+                            TransactionType.EXPENSE -> TransactionType.INCOME
+                            TransactionType.INCOME -> TransactionType.TRANSFER
+                            TransactionType.TRANSFER -> TransactionType.EXPENSE
+                        }
+                        val fallback = when (next) {
+                            TransactionType.INCOME -> CategoryCatalog.incomes
+                            TransactionType.TRANSFER -> CategoryCatalog.transfers
+                            else -> CategoryCatalog.expenses
+                        }.firstOrNull()?.id.orEmpty()
+                        updateDraft {
+                            it.copy(
                                 type = next,
                                 categoryId = fallback,
-                                account = draft.account.ifBlank { accounts.firstOrNull()?.name.orEmpty() },
+                                account = it.account.ifBlank { accounts.firstOrNull()?.name.orEmpty() },
                             )
-                            if (next == TransactionType.TRANSFER) {
-                                transferTo = transferTo.ifBlank { accounts.firstOrNull()?.name.orEmpty() }
-                            }
-                        },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            // ── 中部：收起时是字段区，展开时同一块区域换成选择面板（高度固定，卡框不跳） ──
-            Box(Modifier.fillMaxWidth().height(BodyHeight)) {
-                AnimatedContent(
-                    targetState = panel,
-                    transitionSpec = {
-                        (fadeIn(tween(170)) + slideInVertically(tween(190)) { it / 14 }) togetherWith
-                            fadeOut(tween(120))
+                        }
+                        if (next == TransactionType.TRANSFER) {
+                            transferTo = transferTo.ifBlank { accounts.firstOrNull()?.name.orEmpty() }
+                        }
                     },
-                    label = "overlayBody",
-                ) { field ->
-                    if (field == null) {
-                        Column(Modifier.fillMaxSize()) {
-                            val category = runCatching { CategoryCatalog.of(draft.categoryId) }.getOrNull()
-                            if (draft.type == TransactionType.TRANSFER) {
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    FieldCell(
-                                        modifier = Modifier.weight(1f),
-                                        label = "转出",
-                                        value = draft.account.ifBlank { "选择账户" },
-                                        dimmed = draft.account.isBlank(),
-                                        icon = { AccountIcon(accounts, draft.account) },
-                                        onClick = { startEditing(OverlayField.Account) },
-                                    )
-                                    Text(
-                                        text = "→",
-                                        style = TextStyle(fontSize = 14.sp, color = OverlayPalette.Tertiary),
-                                        modifier = Modifier.padding(horizontal = 6.dp),
-                                    )
-                                    FieldCell(
-                                        modifier = Modifier.weight(1f),
-                                        label = "转入",
-                                        value = transferTo.ifBlank { "选择账户" },
-                                        dimmed = transferTo.isBlank(),
-                                        icon = { AccountIcon(accounts, transferTo) },
-                                        onClick = { startEditing(OverlayField.TransferTo) },
-                                    )
-                                }
-                            } else {
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    FieldCell(
-                                        modifier = Modifier.weight(1f),
-                                        label = "账户",
-                                        value = draft.account.ifBlank { "选择账户" },
-                                        dimmed = draft.account.isBlank(),
-                                        icon = { AccountIcon(accounts, draft.account) },
-                                        onClick = { startEditing(OverlayField.Account) },
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    FieldCell(
-                                        modifier = Modifier.weight(1f),
-                                        label = "分类",
-                                        value = category?.name ?: "选择分类",
-                                        icon = {
-                                            CategoryIconImage(
-                                                name = category?.name ?: "分类",
-                                                color = category?.let { Color(it.color) }
-                                                    ?: OverlayPalette.PlaceholderDot,
-                                                size = 17.dp,
-                                                categoryId = draft.categoryId,
-                                            )
-                                        },
-                                        onClick = { startEditing(OverlayField.Category) },
-                                    )
-                                }
-                            }
+                )
+            }
+        }
 
-                            Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
+        // ── 中部：收起时是字段区，展开时同一块区域换成选择面板（高度固定，卡框不跳） ──
+        Box(Modifier.fillMaxWidth().height(BodyHeight)) {
+            AnimatedContent(
+                targetState = panel,
+                transitionSpec = {
+                    (fadeIn(tween(170)) + slideInVertically(tween(190)) { it / 14 }) togetherWith
+                        fadeOut(tween(120))
+                },
+                label = "overlayBody",
+            ) { field ->
+                if (field == null) {
+                    Column(Modifier.fillMaxSize()) {
+                        val category = runCatching { CategoryCatalog.of(draft.categoryId) }.getOrNull()
+                        if (draft.type == TransactionType.TRANSFER) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 FieldCell(
                                     modifier = Modifier.weight(1f),
-                                    label = "时间",
-                                    value = OverlayFormat.dateTimeLabel(draft.date, minuteOfDay),
-                                    icon = {
-                                        // 时间 / 备注改用 Miuix 图标，与 app 其余页面同一套字形
-                                        Icon(
-                                            MiuixIcons.Alarm,
-                                            contentDescription = null,
-                                            tint = OverlayPalette.Secondary,
-                                            modifier = Modifier.size(17.dp),
-                                        )
-                                    },
-                                    onClick = { startEditing(OverlayField.Date) },
+                                    label = "转出",
+                                    value = draft.account.ifBlank { "选择账户" },
+                                    dimmed = draft.account.isBlank(),
+                                    icon = { AccountIcon(accounts, draft.account) },
+                                    onClick = { startEditing(OverlayField.Account) },
+                                )
+                                Text(
+                                    text = "→",
+                                    style = TextStyle(fontSize = 14.sp, color = OverlayPalette.Tertiary),
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                )
+                                FieldCell(
+                                    modifier = Modifier.weight(1f),
+                                    label = "转入",
+                                    value = transferTo.ifBlank { "选择账户" },
+                                    dimmed = transferTo.isBlank(),
+                                    icon = { AccountIcon(accounts, transferTo) },
+                                    onClick = { startEditing(OverlayField.TransferTo) },
+                                )
+                            }
+                        } else {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                FieldCell(
+                                    modifier = Modifier.weight(1f),
+                                    label = "账户",
+                                    value = draft.account.ifBlank { "选择账户" },
+                                    dimmed = draft.account.isBlank(),
+                                    icon = { AccountIcon(accounts, draft.account) },
+                                    onClick = { startEditing(OverlayField.Account) },
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 FieldCell(
-                                    modifier = Modifier.width(104.dp),
-                                    label = "标签",
-                                    value = selectedTags.firstOrNull() ?: "添加",
-                                    dimmed = selectedTags.isEmpty(),
-                                    icon = null,
-                                    onClick = { startEditing(OverlayField.Tag) },
-                                )
-                            }
-
-                            Spacer(Modifier.height(8.dp))
-
-                            NoteRow(
-                                note = draft.note,
-                                editing = editing == OverlayField.Note,
-                                onClick = { startEditing(OverlayField.Note) },
-                                onCommit = { note ->
-                                    draft = draft.copy(note = note)
-                                    stopEditing()
-                                },
-                            )
-
-                            Spacer(Modifier.height(10.dp))
-
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                CheckPill(
-                                    label = "不计入预算",
-                                    checked = excludeFromBudget,
-                                    onClick = {
-                                        stopEditing()
-                                        excludeFromBudget = !excludeFromBudget
+                                    modifier = Modifier.weight(1f),
+                                    label = "分类",
+                                    value = category?.name ?: "选择分类",
+                                    icon = {
+                                        CategoryIconImage(
+                                            name = category?.name ?: "分类",
+                                            color = category?.let { Color(it.color) }
+                                                ?: OverlayPalette.PlaceholderDot,
+                                            size = 17.dp,
+                                            categoryId = draft.categoryId,
+                                        )
                                     },
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                CheckPill(
-                                    label = "计入资产",
-                                    checked = includeAsset,
-                                    onClick = {
-                                        stopEditing()
-                                        includeAsset = !includeAsset
-                                    },
+                                    onClick = { startEditing(OverlayField.Category) },
                                 )
                             }
                         }
-                    } else {
-                        when (field) {
-                            OverlayField.Account, OverlayField.TransferTo -> {
-                                val isTransferTo = field == OverlayField.TransferTo
-                                AccountPanel(
-                                    title = if (isTransferTo) "转入账户" else "账户",
-                                    accounts = accounts,
-                                    selected = if (isTransferTo) transferTo else draft.account,
-                                    onSelect = { name ->
-                                        if (isTransferTo) {
-                                            transferTo = name
-                                        } else {
-                                            draft = draft.copy(account = name)
-                                        }
-                                        stopEditing()
-                                    },
-                                    onDismiss = { stopEditing() },
-                                )
-                            }
 
-                            OverlayField.Category -> CategoryPanel(
-                                type = draft.type,
-                                selectedKey = draft.categoryId,
-                                onSelect = { id ->
-                                    draft = draft.copy(categoryId = id)
-                                    stopEditing()
+                        Spacer(Modifier.height(8.dp))
+
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            FieldCell(
+                                modifier = Modifier.weight(1f),
+                                label = "时间",
+                                value = OverlayFormat.dateTimeLabel(draft.date, minuteOfDay),
+                                icon = {
+                                    // 时间 / 备注改用 Miuix 图标，与 app 其余页面同一套字形
+                                    Icon(
+                                        MiuixIcons.Alarm,
+                                        contentDescription = null,
+                                        tint = OverlayPalette.Secondary,
+                                        modifier = Modifier.size(17.dp),
+                                    )
                                 },
-                                onPickParent = { draft = draft.copy(categoryId = it) },
-                                onDismiss = { stopEditing() },
+                                onClick = { startEditing(OverlayField.Date) },
                             )
+                            Spacer(Modifier.width(8.dp))
+                            FieldCell(
+                                modifier = Modifier.width(104.dp),
+                                label = "标签",
+                                value = selectedTags.firstOrNull() ?: "添加",
+                                dimmed = selectedTags.isEmpty(),
+                                icon = null,
+                                onClick = { startEditing(OverlayField.Tag) },
+                            )
+                        }
 
-                            OverlayField.Date -> DatePanel(
-                                selected = draft.date,
-                                minuteOfDay = minuteOfDay,
-                                onSelectDate = { date ->
-                                    draft = draft.copy(date = date)
+                        Spacer(Modifier.height(8.dp))
+
+                        NoteRow(
+                            note = draft.note,
+                            editing = editing == OverlayField.Note,
+                            onClick = { startEditing(OverlayField.Note) },
+                            onCommit = { note ->
+                                updateDraft { it.copy(note = note) }
+                                stopEditing()
+                            },
+                        )
+
+                        Spacer(Modifier.height(10.dp))
+
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            CheckPill(
+                                label = "不计入预算",
+                                checked = excludeFromBudget,
+                                onClick = {
                                     stopEditing()
+                                    excludeFromBudget = !excludeFromBudget
                                 },
-                                onMinuteChange = { minuteOfDay = it },
-                                onDismiss = { stopEditing() },
                             )
-
-                            OverlayField.Tag -> TagPanel(
-                                options = tagPool,
-                                selected = selectedTags,
-                                onToggle = { tag ->
-                                    selectedTags = if (selectedTags.contains(tag)) {
-                                        selectedTags - tag
+                            Spacer(Modifier.width(8.dp))
+                            CheckPill(
+                                label = "计入资产",
+                                checked = includeAsset,
+                                onClick = {
+                                    stopEditing()
+                                    includeAsset = !includeAsset
+                                },
+                            )
+                        }
+                    }
+                } else {
+                    when (field) {
+                        OverlayField.Account, OverlayField.TransferTo -> {
+                            val isTransferTo = field == OverlayField.TransferTo
+                            AccountPanel(
+                                title = if (isTransferTo) "转入账户" else "账户",
+                                accounts = accounts,
+                                selected = if (isTransferTo) transferTo else draft.account,
+                                onSelect = { name ->
+                                    if (isTransferTo) {
+                                        transferTo = name
                                     } else {
-                                        selectedTags + tag
+                                        updateDraft { it.copy(account = name) }
                                     }
+                                    stopEditing()
                                 },
                                 onDismiss = { stopEditing() },
                             )
-
-                            // 行内编辑的字段不会走到这里（panel 已过滤），编译器需要穷尽
-                            OverlayField.Amount, OverlayField.Note -> Unit
                         }
+
+                        OverlayField.Category -> CategoryPanel(
+                            type = draft.type,
+                            selectedKey = draft.categoryId,
+                            onSelect = { id ->
+                                updateDraft { it.copy(categoryId = id) }
+                                stopEditing()
+                            },
+                            onPickParent = { id ->
+                                updateDraft { it.copy(categoryId = id) }
+                            },
+                            onDismiss = { stopEditing() },
+                        )
+
+                        OverlayField.Date -> DatePanel(
+                            selected = draft.date,
+                            minuteOfDay = minuteOfDay,
+                            onSelectDate = { date ->
+                                updateDraft { it.copy(date = date) }
+                                stopEditing()
+                            },
+                            onMinuteChange = { minuteOfDay = it },
+                            onDismiss = { stopEditing() },
+                        )
+
+                        OverlayField.Tag -> TagPanel(
+                            options = tagPool,
+                            selected = selectedTags,
+                            onToggle = { tag ->
+                                selectedTags = if (selectedTags.contains(tag)) {
+                                    selectedTags - tag
+                                } else {
+                                    selectedTags + tag
+                                }
+                            },
+                            onDismiss = { stopEditing() },
+                        )
+
+                        // 行内编辑的字段不会走到这里（panel 已过滤），编译器需要穷尽
+                        OverlayField.Amount, OverlayField.Note -> Unit
                     }
                 }
             }
+        }
 
-            Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(10.dp))
 
-            // ── 取消 / 保存 ──
-            val canSave = !finished && !busy && draft.amountCents > 0L
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                FooterButton(
-                    text = "取消",
-                    modifier = Modifier.weight(1f),
-                    container = Color.Transparent,
-                    content = OverlayPalette.Secondary,
-                    outlined = true,
-                    enabled = true,
-                    onClick = {
-                        stopEditing()
-                        onDismiss()
-                    },
-                )
-                Spacer(Modifier.width(10.dp))
-                FooterButton(
-                    text = when {
-                        finished -> "完成"
-                        busy -> "保存中…"
-                        index + 1 < drafts.size -> "保存并下一笔"
-                        else -> "保存"
-                    },
-                    modifier = Modifier.weight(1.55f),
-                    container = OverlayPalette.Accent,
-                    content = OverlayPalette.OnAccent,
-                    outlined = false,
-                    enabled = canSave,
-                    onClick = { commit() },
-                )
-            }
+        // ── 取消（跳过/忽略） / 保存 ──
+        // 多笔时「跳过此笔」只影响当前笔、可继续处理下一笔；单笔或最后一笔的
+        // 「忽略」会整卡丢弃，所以做二次确认（按钮短暂变红），防手指一偏全没了。
+        val canSkipCurrent = drafts.size > 1 && index + 1 < drafts.size
+        val canSave = finished || (!busy && draft.amountCents > 0L)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FooterButton(
+                text = when {
+                    finished -> "已记完"
+                    canSkipCurrent -> "跳过此笔"
+                    confirmDiscard -> "确认忽略？"
+                    else -> "忽略"
+                },
+                modifier = Modifier.weight(1f),
+                container = if (confirmDiscard) OverlayPalette.ExpenseText else Color.Transparent,
+                content = if (confirmDiscard) OverlayPalette.OnAccent else OverlayPalette.Secondary,
+                outlined = !confirmDiscard,
+                enabled = !finished,
+                onClick = {
+                    when {
+                        finished -> Unit
+                        canSkipCurrent -> {
+                            stopEditing()
+                            confirmDiscard = false
+                            advance()
+                        }
+                        confirmDiscard -> {
+                            stopEditing()
+                            onClose()
+                        }
+                        else -> confirmDiscard = true
+                    }
+                },
+            )
+            Spacer(Modifier.width(10.dp))
+            FooterButton(
+                text = when {
+                    finished -> "完成"
+                    busy -> "保存中…"
+                    index + 1 < drafts.size -> "保存并下一笔"
+                    else -> "保存"
+                },
+                modifier = Modifier.weight(1.55f),
+                container = OverlayPalette.Accent,
+                content = OverlayPalette.OnAccent,
+                outlined = false,
+                enabled = canSave,
+                onClick = {
+                    if (finished) {
+                        onClose()
+                    } else {
+                        commit()
+                    }
+                },
+            )
         }
     }
 }
@@ -594,7 +592,7 @@ private fun TypePill(type: TransactionType, onClick: () -> Unit) {
             .heightIn(min = 30.dp)
             .clip(RoundedCornerShape(15.dp))
             .background(background)
-            .clickable(onClick = onClick)
+            .pressableScale(onClick = onClick)
             .padding(horizontal = 13.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -641,7 +639,7 @@ private fun FieldCell(
             .clip(RoundedCornerShape(14.dp))
             .background(OverlayPalette.SurfaceRaised)
             .border(1.dp, OverlayPalette.CardBorder, RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .pressableScale(onClick = onClick)
             .padding(horizontal = 11.dp, vertical = 7.dp),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -692,7 +690,7 @@ private fun NoteRow(
             .clip(RoundedCornerShape(14.dp))
             .background(OverlayPalette.SurfaceRaised)
             .border(1.dp, OverlayPalette.CardBorder, RoundedCornerShape(14.dp))
-            .clickable(enabled = !editing, onClick = onClick)
+            .pressableScale(enabled = !editing, onClick = onClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -748,7 +746,7 @@ private fun CheckPill(label: String, checked: Boolean, onClick: () -> Unit) {
             .clip(shape)
             .background(background)
             .border(1.dp, borderColor, shape)
-            .clickable(onClick = onClick)
+            .pressableScale(onClick = onClick)
             .padding(horizontal = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -782,55 +780,6 @@ private fun CheckPill(label: String, checked: Boolean, onClick: () -> Unit) {
             style = TextStyle(
                 fontSize = 11.5.sp,
                 color = if (checked) OverlayPalette.Ink else OverlayPalette.Secondary,
-            ),
-        )
-    }
-}
-
-@Composable
-private fun FooterButton(
-    text: String,
-    modifier: Modifier = Modifier,
-    container: Color,
-    content: Color,
-    outlined: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(16.dp)
-    val background by animateColorAsState(
-        if (enabled) container else container.copy(alpha = 0.35f),
-        tween(160),
-        label = "btnBg",
-    )
-    val foreground by animateColorAsState(
-        if (enabled) content else content.copy(alpha = 0.6f),
-        tween(160),
-        label = "btnFg",
-    )
-    Box(
-        modifier
-            .height(46.dp)
-            .clip(shape)
-            .background(background)
-            .then(
-                if (outlined) {
-                    Modifier.border(1.dp, OverlayPalette.CardBorder, shape)
-                } else {
-                    Modifier
-                },
-            )
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            style = TextStyle(
-                fontFamily = InterRegular,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.2.sp,
-                color = foreground,
             ),
         )
     }
@@ -873,41 +822,6 @@ private fun AmountInlineEditor(
     )
 }
 
-@Composable
-private fun NoteInlineEditor(
-    initial: String,
-    onCommit: (String) -> Unit,
-) {
-    var text by remember { mutableStateOf(initial) }
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(80)
-        runCatching { focusRequester.requestFocus() }
-        BillOverlay.showIme()
-    }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        BasicTextField(
-            value = text,
-            onValueChange = { text = it.take(50) },
-            singleLine = true,
-            cursorBrush = SolidColor(OverlayPalette.Ink),
-            textStyle = TextStyle(fontSize = 13.sp, color = OverlayPalette.Ink),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { onCommit(text.trim()) }),
-            modifier = Modifier
-                .weight(1f)
-                .focusRequester(focusRequester),
-        )
-        Text(
-            text = "确定",
-            style = TextStyle(fontSize = 13.sp, color = OverlayPalette.Accent),
-            modifier = Modifier
-                .clickable { onCommit(text.trim()) }
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-        )
-    }
-}
-
 /**
  * 展开面板的公共骨架：标题行 + 分隔线 + 内容。
  *
@@ -945,7 +859,7 @@ private fun PanelScaffold(
                     .height(28.dp)
                     .clip(RoundedCornerShape(9.dp))
                     .background(OverlayPalette.Accent.copy(alpha = 0.08f))
-                    .clickable(onClick = onDismiss)
+                    .pressableScale(onClick = onDismiss)
                     .padding(horizontal = 11.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1040,7 +954,7 @@ private fun TileShape(
             .clip(shape)
             .background(background)
             .border(1.dp, borderColor, shape)
-            .clickable(onClick = onClick)
+            .pressableScale(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -1165,7 +1079,7 @@ private fun ParentChip(
                 if (active) OverlayPalette.Accent else OverlayPalette.CardBorder,
                 shape,
             )
-            .clickable(onClick = onClick)
+            .pressableScale(onClick = onClick)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1425,7 +1339,7 @@ private fun TagPanel(
                             else OverlayPalette.CardBorder,
                             shape,
                         )
-                        .clickable { onToggle(option) }
+                        .pressableScale(onClick = { onToggle(option) })
                         .padding(horizontal = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -1456,67 +1370,6 @@ private fun OverlayField.isPanel(): Boolean = when (this) {
     -> true
 
     OverlayField.Amount, OverlayField.Note -> false
-}
-
-/** 当前时刻折算成「当天第几分钟」，用作卡片里时分的默认值 */
-private fun nowMinuteOfDay(): Int {
-    val now = LocalTime.now()
-    return now.hour * 60 + now.minute
-}
-
-private val ActorFamily = FontFamily(Font(R.font.actor_regular, FontWeight.Normal))
-private val InterRegular = FontFamily(Font(R.font.inter_regular, FontWeight.Normal))
-private val InterMedium = FontFamily(Font(R.font.inter_medium, FontWeight.Medium))
-
-/**
- * 卡片配色：全部围绕 app 主色 `#2177E8`（冷蓝）。
- *
- * 之前是绿色系，悬浮在别人应用上既像微信又和 app 内其它页面撞色；
- * 现在只有**一个**强调色（主色蓝），红/绿仅用于金额语义，不再参与选中态。
- */
-internal object OverlayPalette {
-
-    /** 卡片底：白 → 极淡冷蓝的竖向渐变（不用实色才不显灰） */
-    val CardGradient = listOf(Color(0xFFFDFEFF), Color(0xFFECF2FC))
-
-    /** 行/备注的浅色卡底（白 80%，压在渐变上形成一级层次） */
-    val SurfaceRaised = Color(0xCCFFFFFF)
-
-    /** 统一的 1dp 描边：所有可点区域共用，靠边界而不是靠颜色区分"能点" */
-    val CardBorder = Color(0xFFDEE7F5)
-
-    val Ink = Color(0xFF16202E)
-    val Label = Color(0xFF33415A)
-    val Secondary = Color(0xFF5D6B80)
-
-    /** 说明性小字：对比度 ≥ 4.5:1 */
-    val Hint = Color(0xFF6B7A8C)
-    val Tertiary = Color(0xFF8A97A8)
-
-    /** 全卡唯一强调色 = app 主色；保存按钮、选中态、勾选态共用 */
-    val Accent = Color(0xFF2177E8)
-    val OnAccent = Color.White
-    val CheckBorder = Color(0xFFCBD7E6)
-    val PlaceholderDot = Color(0xFFD5DDEA)
-
-    /** 金额：红涨绿跌之外，转账用品牌蓝，三种语义互不混淆 */
-    val ExpenseText = Color(0xFFE5484D)
-    val IncomeText = Color(0xFF0E8A64)
-    val TransferText = Color(0xFF2557D6)
-
-    /** 类型胶囊：浅底 + 深字，小字对比度达标 */
-    val ExpenseChipBg = Color(0xFFFDECEC)
-    val ExpenseChipInk = Color(0xFFC0393E)
-    val IncomeChipBg = Color(0xFFE8F5EE)
-    val IncomeChipInk = Color(0xFF0B7A5A)
-    val TransferChipBg = Color(0xFFEAF0FF)
-    val TransferChipInk = Color(0xFF2557D6)
-}
-
-private fun amountColor(type: TransactionType): Color = when (type) {
-    TransactionType.INCOME -> OverlayPalette.IncomeText
-    TransactionType.TRANSFER -> OverlayPalette.TransferText
-    else -> OverlayPalette.ExpenseText
 }
 
 private fun chipBg(type: TransactionType): Color = when (type) {

@@ -35,7 +35,7 @@ enum class AiPromptKind(
         key = "bill_text",
         title = "账单识别（文本）",
         usage = "自然语言、短信、支付通知原文 → 一笔账单",
-        effect = "AI 记账页「文本识别用 AI」打开、且已配置 Key 时生效；本地规则不受影响",
+        effect = "AI 记账页「文本识别用 AI」打开、且已配置 Key 时优先生效；AI 失效时降级本地规则",
         // 与早先硬编码版本逐字一致：老用户升级后解析行为不变
         defaultText = """
             你是一个记账助手。把用户输入的自然语言解析成一笔账单。
@@ -56,7 +56,7 @@ enum class AiPromptKind(
         key = "bill_image",
         title = "小票识别（图片）",
         usage = "小票、账单截图 → 一笔账单（视觉模型）",
-        effect = "本机 OCR 认不出金额、且「图片识别用 AI」打开时才生效（关闭则图片永不出设备）",
+        effect = "开启「图片识别用 AI」时直接把图片交给视觉模型（失败回落本地 OCR）；关闭则图片永不出设备",
         defaultText = """
             你是一个小票识别助手。从用户提供的小票图片中识别出一笔消费记录。
             返回 JSON 格式：
@@ -114,18 +114,20 @@ enum class AiPromptKind(
         key = "summary",
         title = "AI 摘要",
         usage = "统计页「AI 小结」按当期数据写一段点评",
-        effect = "已配置 Key 时点「AI 小结」立即生成；数据只发当期汇总，不发原始流水",
+        effect = "已配置 Key 时点「AI 小结」立即生成；数据只发当期汇总与预计算指标，不发原始流水",
         defaultText = """
-            你是一名记账助教。根据用户某个周期的收支数据，写一段 80~150 字的中文点评。
-            输入是一个 JSON：dimension（周/月/年）、period（周期名）、expense、income、balance、
-            billCount、prevExpense（上一周期支出，可能为 0）、
-            topCategories（数组，每项含 name 与 amount，按金额降序）。
+            你是用户的记账分析师。根据某个周期的汇总数据写一段点评，让用户看清三件事：钱花在哪、和上一期或预算比怎么样、下一步改什么。
+            输入 JSON 字段：dimension（周/月/年）、period（周期名）、expense、income、balance、billCount、
+            expensePerBill（支出笔均）、dailyAvgExpense（日均支出）、prevExpense 与 expenseChangePct（上期支出与支出环比%）、
+            incomeChangePct（收入环比%）、budget 与 budgetUsedPct（预算额度与已用%，可能没有）、
+            topCategories（数组：name、amount、share 为占总支出百分比，按金额降序）。
+            金额单位均为元。所有衍生指标都已经算好，直接引用即可，禁止自行计算，也禁止写出输入里没有的数字。
             要求：
-            1. 直接输出正文，不要标题、不要 markdown、不要列表符号；
-            2. 至少引用两个具体数字（金额或笔数），不要空泛；
-            3. 先一句总览，再点出占比最高的分类，最后给一条可执行的建议；
-            4. billCount 为 0 时只回一句「本期还没有记账，先记几笔再来看看」；
-            5. 不要臆测数据里没有的信息，也不要给投资建议。
+            1. 直接输出正文，不要标题、不要 markdown 符号，不超过 180 字；
+            2. 每个判断必须挂一个输入里的具体数字；没有数字支撑的结论不要写；
+            3. 按顺序讲三件事：花在哪（share 最高的分类）、变化（环比或预算消耗，对应字段存在才写）、一条建议；
+            4. 建议必须落到具体分类：点出它的金额与占比，给一个本周或本月内能执行的动作；禁止「理性消费」「注意控制开支」这类没有对象的空话；
+            5. 不臆测数据外的信息，不给投资建议；billCount 为 0 时只回一句「本期还没有记账，先记几笔再来看看」。
         """.trimIndent(),
     ),
     ;

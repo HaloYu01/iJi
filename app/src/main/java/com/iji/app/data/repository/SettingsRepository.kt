@@ -38,57 +38,76 @@ private val Context.dataStore by preferencesDataStore(
  *
  * **内存缓存**：各设置页此前用 `remember { getXxx(...) }` 在**组合期**读取，
  * 而 DataStore 的 `data.first()` 是磁盘 IO —— runBlocking 会直接阻塞主线程
- * （AI 配置页一次读 3 个键）。这里加一层并发缓存，并由 [warmUp] 在 Application 启动时
- * 于 IO 线程预热组合期会用到的键，使这些读取消除磁盘 IO 且不引入加载闪烁。
+ * （AI 配置页一次读 3 个键）。[warmUp] 在 Application 启动时**一次性**把 DataStore
+ * 整份读进内存（同时完成 SharedPreferences 迁移），并置 `warmed`；此后所有 getter
+ * 只查内存，未落盘的键直接返回默认值，不再触发磁盘 IO。
+ *
+ * 注意：warmUp 必须在任何 UI/State 初始化之前调用。此前它是异步 launch，而
+ * PerfState / HapticsState / FontScaleState 在 Application.onCreate 里已经同步读了
+ * 4 次 DataStore（每次都 runBlocking），异步预热反而排在它们后面。
  *
  * 注意：应用锁 PIN 走 P0 的 EncryptedSharedPreferences（安全敏感，不降级为明文 DataStore），
  * 故 AppLockManager 暂不纳入本仓库。
  */
 object SettingsRepository {
 
-    /**
-     * 检查更新的更新源地址。
-     *
-     * 留空 = 未接入在线更新（App 内不联网、不假装「已是最新」）；
-     * 填入后由 [com.iji.app.update.UpdateChecker] 真实请求并比对版本号。
-     */
-    const val KEY_UPDATE_FEED_URL = "update_feed_url"
+    /** App 启动即检查更新（默认开，可在偏好设置里关） */
+    const val KEY_AUTO_CHECK_UPDATE = "auto_check_update"
+
+    /** 发现新版本时弹出提醒（默认开；关掉后只记录检查结果） */
+    const val KEY_UPDATE_REMINDER = "update_reminder"
+
+    /** 启动检查的日期戳 yyyy-MM-dd：每天最多请求一次，避免重复联网 */
+    const val KEY_UPDATE_LAST_CHECK_DATE = "update_last_check_date"
 
     /**
-     * 首次引导是否已看过（true = 不再自动弹「欢迎使用」）。
+     * 已同意的隐私政策版本号（0 = 从未同意）。
      *
-     * 默认 false：只在"没看过"时弹一次。老用户升级上来会看到一次，
-     * 点「开始使用」即消失并写标记——比"偷偷按有没有账单猜你是不是新用户"更可预期。
+     * 存版本号而不是布尔：政策修订后把 privacyPolicyVersion +1，
+     * 老用户下次启动会重新看到同意页，不需要做数据迁移或清除标记。
      */
-    const val KEY_ONBOARDING_DONE = "onboarding_done"
+    const val KEY_PRIVACY_AGREED_VERSION = "privacy_agreed_version"
+
+    /**
+     * 开局引导状态（int 三态，不是布尔）：
+     * - [ONBOARDING_FRESH] 从未触发：存量用户升级 / 尚未同意隐私，不该被引导拦住；
+     * - [ONBOARDING_PENDING] 刚同意隐私、引导待完成：同意后立刻被杀进程，下次冷启动仍会进引导；
+     * - [ONBOARDING_DONE] 完成或跳过：以后都不再进。
+     *
+     * 只在「同意隐私」时从 FRESH 推进到 PENDING，因此已完成的老用户在隐私政策
+     * 版本升级后重新同意，也不会重复看到引导。
+     */
+    const val KEY_ONBOARDING_STATE = "onboarding_state"
+    const val ONBOARDING_FRESH = 0
+    const val ONBOARDING_PENDING = 1
+    const val ONBOARDING_DONE = 2
+
+    /** 权限检验页「首次说明卡」是否已看过；可随时从页内「查看说明」重新展开 */
+    const val KEY_PERMISSION_GUIDE_SHOWN = "permission_guide_shown"
 
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /** 已读取的键值缓存（键为 DataStore 键名） */
     private val cache = ConcurrentHashMap<String, Any>()
 
-    /** 由 IjiApplication.onCreate 调用（IO 协程），不阻塞冷启动 */
+    /** warmUp 是否已完成。完成后未命中缓存的键 = 确实没落盘，直接返回默认值。 */
+    @Volatile
+    private var warmed = false
+
+    /**
+     * 由 IjiApplication.onCreate 在**任何 UI / State 初始化之前**调用。
+     *
+     * 一次性读取整份 DataStore（含 SharedPreferences 迁移），把所有已落盘的键塞进内存；
+     * 此前只预热固定十几个键，通知规则、首次引导、按账本记忆等动态键仍会在组合期
+     * runBlocking 读盘。现在预热后所有 getter 都不再碰磁盘。
+     */
     suspend fun warmUp(context: Context) = withContext(Dispatchers.IO) {
         runCatching {
             val p = context.dataStore.data.first()
-            // 默认值必须与各 getter 的 def 一致，否则预热后会改变行为
-            cache["theme_mode"] = p[stringPreferencesKey("theme_mode")] ?: "system"
-            cache["font_size"] = p[floatPreferencesKey("font_size")] ?: 16f
-            cache["is_24_hour"] = p[booleanPreferencesKey("is_24_hour")] ?: true
-            cache["week_start_day"] = p[intPreferencesKey("week_start_day")] ?: 1
-            cache["month_start_day"] = p[intPreferencesKey("month_start_day")] ?: 1
-            // AI 配置：默认值必须留空，交给 AiConfig 按当前服务的默认地址 / 模型兜底。
-            // 这里曾写死 "https://open.bigmodel.cn/api/paas/v4/"（缺 /chat/completions），
-            // 预热后会让「没配置过」的地址看起来已经有值，且请求必然 404。
-            cache["api_url"] = p[stringPreferencesKey("api_url")] ?: ""
-            cache["api_key"] = p[stringPreferencesKey("api_key")] ?: ""
-            // 键名是 "model"（AiConfig.KEY_MODEL）；原来预热的是历史键 "model_name"，从未命中
-            cache["model"] = p[stringPreferencesKey("model")] ?: ""
-            cache["perf_reduced_effects"] = p[booleanPreferencesKey("perf_reduced_effects")] ?: false
-            cache["reminder_enabled"] = p[booleanPreferencesKey("reminder_enabled")] ?: false
-            cache["reminder_hour"] = p[intPreferencesKey("reminder_hour")] ?: 21
-            // 更新源地址：关于页打开「检查更新」时要读，预热掉以免弹窗在组合期做磁盘 IO
-            cache[KEY_UPDATE_FEED_URL] = p[stringPreferencesKey(KEY_UPDATE_FEED_URL)] ?: ""
+            p.asMap().forEach { (key, value) ->
+                if (value != null) cache[key.name] = value
+            }
+            warmed = true
         }
     }
 
@@ -104,6 +123,7 @@ object SettingsRepository {
     // ── 通用基础类型读写（供各设置页去硬编码迁移，键名需全局唯一）──
     fun getString(context: Context, key: String, def: String = ""): String {
         cache[key]?.let { return it as? String ?: def }
+        if (warmed) return def
         val v = runBlocking { context.dataStore.data.first()[stringPreferencesKey(key)] ?: def }
         cache[key] = v
         return v
@@ -116,6 +136,7 @@ object SettingsRepository {
 
     fun getBoolean(context: Context, key: String, def: Boolean = false): Boolean {
         cache[key]?.let { return it as? Boolean ?: def }
+        if (warmed) return def
         val v = runBlocking { context.dataStore.data.first()[booleanPreferencesKey(key)] ?: def }
         cache[key] = v
         return v
@@ -128,6 +149,7 @@ object SettingsRepository {
 
     fun getInt(context: Context, key: String, def: Int = 0): Int {
         cache[key]?.let { return it as? Int ?: def }
+        if (warmed) return def
         val v = runBlocking { context.dataStore.data.first()[intPreferencesKey(key)] ?: def }
         cache[key] = v
         return v
@@ -138,8 +160,22 @@ object SettingsRepository {
         ioScope.launch { context.dataStore.edit { it[intPreferencesKey(key)] = value } }
     }
 
+    /**
+     * 与 [setInt] 不同：**返回时 DataStore 已写完**。
+     *
+     * 用于隐私政策同意这类强一致标记：用户点完同意可能立刻被系统杀进程，
+     * 若只走异步落盘，写入没赶上下次启动就会重复弹同意页。
+     */
+    suspend fun setIntAwait(context: Context, key: String, value: Int) {
+        cache[key] = value
+        withContext(Dispatchers.IO) {
+            context.dataStore.edit { it[intPreferencesKey(key)] = value }
+        }
+    }
+
     fun getFloat(context: Context, key: String, def: Float = 0f): Float {
         cache[key]?.let { return it as? Float ?: def }
+        if (warmed) return def
         val v = runBlocking { context.dataStore.data.first()[floatPreferencesKey(key)] ?: def }
         cache[key] = v
         return v

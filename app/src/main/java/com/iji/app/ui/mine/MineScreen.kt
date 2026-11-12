@@ -1,17 +1,10 @@
 package com.iji.app.ui.mine
 import com.iji.app.ui.components.LocalSnackbarController
 
-import com.iji.app.backup.BackupManager
 import com.iji.app.lock.AppLockManager
-import com.iji.app.ui.theme.ThemeState
 import com.iji.app.ui.Routes
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,20 +19,23 @@ import coil3.compose.SubcomposeAsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
+import com.iji.app.ui.components.topbar.LiquidTopBarButton
 import com.iji.app.ui.components.topbar.topBarContentInset
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiSettingsDivider
 import com.iji.app.ui.components.RowLeadingIcon
 import com.iji.app.ui.components.IjiTopBar
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.ijiTopBarRecordHeight
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -53,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.iji.app.ui.components.IjiTopBarHeight
+import com.iji.app.ui.components.IjiTrailingIcon
 import com.iji.app.ui.components.ijiTopBarSafeTopPadding
 import com.iji.app.ui.theme.TextSecondary
 import com.iji.app.ui.theme.AppleSeparator
@@ -63,19 +60,19 @@ import com.iji.app.ui.theme.ApplePurple
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.MiuixPrimaryDark
 import top.yukonga.miuix.kmp.basic.Card
-import com.iji.app.ui.AddSheetRequestHolder
-import com.iji.app.ui.components.OnboardingDialog
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.icon.extended.Backup
 import top.yukonga.miuix.kmp.icon.extended.BankCards
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
-import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Copy
+import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Help
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Lock
 import top.yukonga.miuix.kmp.icon.extended.Months
+import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.icon.extended.Pin
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.Send
@@ -102,30 +99,9 @@ fun MineScreen(
 
     var showNicknameDialog by remember { mutableStateOf(false) }
     var nicknameInput by remember { mutableStateOf("") }
-    // 新手教程：首次启动由 AppRoot 自动弹一次，这里提供「随时再看一遍」的入口
-    var showGuide by remember { mutableStateOf(false) }
 
-    // ── 右侧状态摘要：不点进二级页也能看到当前状态 ──
-    // 主题读 ThemeState.themeMode（Compose 内存状态）：它既是「当前生效」的真实来源，
-    // 用户改完主题又能立即刷新。
-    // 注意：不要在这里调 SettingsRepository.getString —— 它在缓存未命中时是
-    // `runBlocking { dataStore.data.first() }`，放在组合期会阻塞主线程。
-    val themeSummary = when (ThemeState.themeMode) {
-        "light" -> "浅色模式"
-        "dark" -> "深色模式"
-        else -> "跟随系统"
-    }
+    // 密码保护行的右侧状态摘要：不点进二级页也能看到是否开启
     val lockSummary = if (AppLockManager.isEnabled(context)) "已开启" else "未开启"
-    // 最近备份时间要读文件系统，必须挪到 IO 线程
-    var lastBackupAt by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(Unit) {
-        lastBackupAt = withContext(Dispatchers.IO) { BackupManager.latestBackupTime(context) }
-    }
-    val backupSummary = if (lastBackupAt <= 0L) {
-        "尚未备份"
-    } else {
-        "最近备份 " + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(lastBackupAt))
-    }
 
     // 头像图片选择：Photo Picker 选图后经路由进入「调整头像」独立子页（缩放/移动 → 确定裁剪保存），
     // 不直接写 URI —— 裁剪结果落盘到应用私有目录，不依赖相册 URI 的持久授权
@@ -147,6 +123,11 @@ fun MineScreen(
         drawContent()
     }
     val scrollBehavior = rememberTopBarScrollBehavior()
+    val listState = rememberLazyListState()
+    // 顶栏模糊只在滚动中重录采样层。原来 layerBackdrop 没传 recordKey，
+    // 静止时仍会每帧全屏录制一整层（约 14MB/帧），是设置页滑动掉帧的主要来源。
+    val topBarRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val topBarMustRecord = remember(listState) { { topBarRecordGate.shouldRecord(listState.isScrollInProgress) } }
 
     // 屏幕尺寸 / 方向适配：平板（≥600dp）与横屏加宽内容两侧留白，
     // 避免大屏上内容被拉得过宽，也避免横屏时内容被侧边挖孔压住
@@ -170,11 +151,12 @@ fun MineScreen(
         // 相减后超出 Constraints 可表示范围会抛
         // IllegalArgumentException: Can't represent a width of ... and height of 2147483527 —— 实测「我的」页一打开就崩。
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .topBarContentInset(scrollBehavior)
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
-                .layerBackdrop(backdrop),
+                .layerBackdrop(backdrop, recordKey = Unit, mustRecord = topBarMustRecord, recordHeight = ijiTopBarRecordHeight()),
             contentPadding = PaddingValues(
                 top = ijiTopBarContentPadding(),
                 start = extraHorizontal,
@@ -245,11 +227,11 @@ fun MineScreen(
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
                     SettingsRow(MiuixIcons.GridView, "分类管理") { onNavigate(Routes.CATEGORY_MANAGE) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.BankCards, "账本管理") { onNavigate(Routes.LEDGER_MANAGE) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Copy, "记账模板") { onNavigate(Routes.TEMPLATE_MANAGE) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Pin, "标签管理") { onNavigate(Routes.TAG_MANAGE) }
                 }
             }
@@ -261,9 +243,9 @@ fun MineScreen(
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
                     SettingsRow(MiuixIcons.Months, "预算") { onNavigate(Routes.BUDGET) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Weeks, "周期账单") { onNavigate(Routes.RECURRING_MANAGE) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Send, "应收 / 垫付") { onNavigate(Routes.REIMBURSE_MANAGE) }
                 }
             }
@@ -275,9 +257,11 @@ fun MineScreen(
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
                     SettingsRow(MiuixIcons.Refresh, "自动记账") { onNavigate(Routes.AUTO_BOOKKEEPING) }
-                    DividerLine()
+                    IjiSettingsDivider()
+                    SettingsRow(MiuixIcons.Notes, "智能识别") { onNavigate(Routes.SMART_CAPTURE) }
+                    IjiSettingsDivider()
                     SettingsRow(Icons.Default.AutoAwesome, "AI 记账") { onNavigate(Routes.AI) }
-                    DividerLine()
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Copy, "提示词与规则") { onNavigate(Routes.PROMPTS) }
                 }
             }
@@ -288,9 +272,15 @@ fun MineScreen(
                     accent = AppleGreen,
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
-                    SettingsRow(MiuixIcons.Backup, "数据与备份", summary = backupSummary) {
+                    SettingsRow(MiuixIcons.Backup, "数据与备份") {
                         onNavigate(Routes.BACKUP_SETTINGS)
                     }
+                    IjiSettingsDivider()
+                    SettingsRow(
+                        MiuixIcons.Download,
+                        "账单导入/导出",
+                        summary = "CSV / 截图",
+                    ) { onNavigate(Routes.BILL_IMPORT) }
                 }
             }
 
@@ -300,8 +290,8 @@ fun MineScreen(
                     accent = AppleOrange,
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
-                    SettingsRow(MiuixIcons.Settings, "偏好设置", summary = themeSummary) { onNavigate(Routes.PREFERENCES) }
-                    DividerLine()
+                    SettingsRow(MiuixIcons.Settings, "偏好设置") { onNavigate(Routes.PREFERENCES) }
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Lock, "密码保护", summary = lockSummary) { onNavigate(Routes.PASSWORD_PROTECT) }
                 }
             }
@@ -312,8 +302,10 @@ fun MineScreen(
                     accent = MiuixPrimaryDark,
                     modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                 ) {
-                    SettingsRow(MiuixIcons.Help, "新手教程") { showGuide = true }
-                    DividerLine()
+                    SettingsRow(MiuixIcons.Help, "引导教程") { onNavigate(Routes.GUIDE_TUTORIAL) }
+                    IjiSettingsDivider()
+                    SettingsRow(MiuixIcons.Notes, "捐赠支出") { onNavigate(Routes.DONATION) }
+                    IjiSettingsDivider()
                     SettingsRow(MiuixIcons.Info, "关于应用") { onNavigate(Routes.ABOUT) }
                 }
             }
@@ -324,43 +316,19 @@ fun MineScreen(
             title = "设置",
             largeTitle = "设置",
             scrollBehavior = scrollBehavior,
-            startAction = { _, _ ->
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .clickable { onBack() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        MiuixIcons.ChevronBackward,
-                        contentDescription = "返回",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
+            startAction = { backdropAlpha, shadowAlpha ->
+                // 顶栏上滑变糊时按钮浮出液态玻璃材质（backdropAlpha 随模糊带弹簧升降）
+                LiquidTopBarButton(
+                    onClick = onBack,
+                    icon = MiuixIcons.ChevronBackward,
+                    contentDescription = "返回",
+                    backdrop = backdrop,
+                    backdropAlpha = backdropAlpha,
+                    shadowAlpha = shadowAlpha,
+                )
             },
         )
     }
-
-    // 新手教程：与首次启动弹的是同一个弹窗，这里可随时重看
-    OnboardingDialog(
-        show = showGuide,
-        onDismiss = { showGuide = false },
-        onAddFirst = {
-            showGuide = false
-            AddSheetRequestHolder.post()
-        },
-        onImport = {
-            showGuide = false
-            onNavigate(Routes.BILL_IMPORT)
-        },
-        onBackup = {
-            showGuide = false
-            onNavigate(Routes.BACKUP_SETTINGS)
-        },
-        onFinish = { showGuide = false },
-    )
 
     // 昵称编辑弹窗（全站弹窗统一走 IjiDialog）
     IjiDialog(
@@ -513,24 +481,11 @@ private fun SettingsRow(
                     .padding(start = 12.dp),
             )
         }
-        Icon(
-            MiuixIcons.ChevronForward,
-            contentDescription = null,
-            tint = TextSecondary,
-            modifier = Modifier
-                .padding(start = 6.dp)
-                .size(20.dp),
+        IjiTrailingIcon(
+            MiuixIcons.Basic.ArrowRight,
+            modifier = Modifier.padding(start = 6.dp),
         )
     }
 }
 
-@Composable
-private fun DividerLine() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 20.dp)
-            .height(0.5.dp)
-            .background(AppleSeparator),
-    )
-}
+

@@ -12,10 +12,10 @@ import java.time.LocalDate
  * 共享数据/导航状态委托给 App 级 MainViewModel。本屏的筛选/多选/弹窗等临时 UI 状态仍由 Composable 的 remember 持有。
  */
 class HomeViewModel(private val app: MainViewModel) : ViewModel() {
-    val monthSummaries = app.monthSummaries
-    val monthExpenseCents = app.monthExpenseCents
-    val monthBudgetExpenseCents = app.monthBudgetExpenseCents
-    val monthIncomeCents = app.monthIncomeCents
+    /** 首页唯一数据源：列表、汇总金额、「是否已加载」在同一个状态里同帧发布 */
+    val monthUiState = app.monthUiState
+    /** 退款索引：与记一笔面板共享同一份计算，不在组合期重复遍历全量账单 */
+    val refundView = app.refundView
     val selectedMonth = app.selectedMonth
     val currentLedger = app.currentLedger
     val monthlyBudgetCents = app.monthlyBudgetCents
@@ -27,9 +27,6 @@ class HomeViewModel(private val app: MainViewModel) : ViewModel() {
     val ledgerInfos = app.ledgerInfos
     /** 当前账本全量账单（跨月）：退款溯源需要按 id 反查原账单，不能只用本月汇总 */
     val transactions = app.transactions
-
-    /** 首帧标记：false 时列表还没拿到数据，不能渲染成「没有账单」 */
-    val transactionsReady = app.transactionsReady
 
     /** 读库失败原因（null = 正常） */
     val transactionsError = app.transactionsError

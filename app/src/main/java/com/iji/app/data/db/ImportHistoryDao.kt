@@ -28,4 +28,11 @@ interface ImportHistoryDao {
      */
     @Query("DELETE FROM import_history WHERE importedAtMillis < :beforeMillis")
     suspend fun deleteOlderThan(beforeMillis: Long)
+
+    /** 撤销 / 重新导入后更新本批的账单 id 与状态（快照不动） */
+    @Query("UPDATE import_history SET recordIds = :recordIds, undone = :undone WHERE id = :id")
+    suspend fun updateState(id: Long, recordIds: String, undone: Boolean)
+
+    @Query("DELETE FROM import_history WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }

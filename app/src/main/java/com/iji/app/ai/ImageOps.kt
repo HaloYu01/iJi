@@ -29,3 +29,18 @@ internal fun applyExifRotation(ctx: Context, uri: Uri, bmp: Bitmap): Bitmap {
     val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
     return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
 }
+
+/**
+ * 降采样 + JPEG 压缩 + base64：原图动辄 4000px，压到 1280 长边可避免请求体过大，金额数字仍清晰。
+ */
+internal fun encodeImageForModel(bmp: Bitmap): String {
+    val scale = (1280f / maxOf(bmp.width, bmp.height)).coerceAtMost(1f)
+    val target = if (scale < 1f) {
+        Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+    } else {
+        bmp
+    }
+    val baos = java.io.ByteArrayOutputStream()
+    target.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+    return android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+}

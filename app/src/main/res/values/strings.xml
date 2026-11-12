@@ -6,9 +6,14 @@
     <string name="accessibility_payment_desc">开启后，本应用只读取「通知栏」中支付类通知的文字（例如微信、支付宝的付款成功提示），在本机解析出金额后提示你一键记账。不会读取其他应用界面内容，不会模拟任何点击，也不会自动记账——必须由你确认后才会计入账本。所有解析均在本机完成，通知内容不会上传到任何服务器。</string>
     <!-- 音量键快捷识屏：随用随启，不常驻 -->
     <string name="volume_key_accessibility_label">音量键识屏记账</string>
-    <string name="volume_key_accessibility_desc">在系统「无障碍 → 音量键快捷键」中选中本服务后，按下音量键会立刻截取当前屏幕并在本机识别账单，识别完即退出（不常驻、不读取界面内容、不监听其他按键）。若 Shizuku 与无障碍截屏都不可用，只会打开本应用让你去授权。</string>
+    <string name="volume_key_accessibility_desc">在系统「无障碍」中为本服务开启「音量键快捷方式」后，同时按住音量上 + 下约 3 秒会截取当前屏幕并在本机识别账单，识别完即退出（不常驻、不读取界面内容、不监听其他按键）。若应用内的「音量键快捷识屏」开关未开启，或 Shizuku 与无障碍截屏都不可用，只会提示原因或打开本应用让你去授权。</string>
     <!-- 下拉快捷开关：识屏记账（Shizuku） -->
     <string name="tile_scan_label">识屏记账</string>
     <string name="tile_scan_ready">点一下截屏识别</string>
     <string name="tile_scan_need_auth">点一下去授权</string>
+    <!-- 桌面长按快捷方式 -->
+    <string name="shortcut_auto_short">自动记账</string>
+    <string name="shortcut_auto_long">打开自动记账设置</string>
+    <string name="shortcut_capture_short">智能识别</string>
+    <string name="shortcut_capture_long">一句话或图片识别账单</string>
 </resources>

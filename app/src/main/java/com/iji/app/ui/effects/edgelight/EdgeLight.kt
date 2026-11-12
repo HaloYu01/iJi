@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.iji.app.ui.util.AppMaterialSettings
 import com.iji.app.ui.util.isAppDarkTheme
 
 @Immutable
@@ -111,6 +112,29 @@ fun rememberDefaultEdgeLight(): EdgeLight {
     val color = if (isLightTheme) Color.White.copy(alpha = 0.7f)
                 else Color.White.copy(alpha = 0.4f)
     return remember(isLightTheme) { EdgeLight.Uniform(color = color) }
+}
+
+/**
+ * 带材质档降级的默认描边（对齐 NexioSchedule 的 EdgeLightBindings 语义）。
+ *
+ * - [baseColor] 只决定**高光描边**的染色；默认 null = 通用白高光。
+ * - [degradedBaseColor] 只在**降级描边**（无材质档）时用：没有模糊高光时，
+ *   靠「同色系提亮一档」把轮廓从背景里拉出来。底栏传容器色是对的。
+ *
+ * 档位读进 remember key：只在计算块里读的话，档位切换能触发重组，
+ * 但 key 没变会直接返回缓存的旧描边，降级要等下一次别的原因重组才生效。
+ */
+@Composable
+fun rememberDefaultEdgeLight(
+    baseColor: Color? = null,
+    degradedBaseColor: Color? = baseColor,
+): EdgeLight {
+    val isLightTheme = !isAppDarkTheme()
+    val materialLevel = AppMaterialSettings.level
+    val source = rememberDefaultEdgeLight()
+    return remember(source, isLightTheme, baseColor, degradedBaseColor, materialLevel) {
+        AppMaterialSettings.resolveEdgeLight(source, isLightTheme, degradedBaseColor)
+    }
 }
 
 @Composable

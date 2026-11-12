@@ -1,6 +1,7 @@
 package com.iji.app.ui.add
 
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.animation.AnimatedVisibility
@@ -49,10 +50,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiSwitchRow
 import com.iji.app.ui.components.RegisterOverlayBackLayer
 import com.iji.app.ui.components.WheelOptionDialog
 import com.iji.app.ui.components.ijiButtonFocusRing
+import com.iji.app.ui.components.ijiPrimaryButtonColors
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -61,6 +64,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -106,7 +110,9 @@ import com.iji.app.ui.components.parseCents
 import com.iji.app.ui.components.sanitizeAmountInput
 import com.iji.app.ui.components.AccountIconImage
 import com.iji.app.ui.theme.DividerGray
+import com.iji.app.ui.theme.ExpenseAmount
 
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IjiTheme
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.components.DateTimePickerDialog
@@ -139,6 +145,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 编辑日期 / 时间的 Saver：旋转或进程重建后不丢用户所选时间 */
 private val DateTimeSaver = listSaver<LocalDateTime, Int>(
@@ -324,7 +331,7 @@ private fun recentFirst(recent: String): Comparator<String> =
 fun AddTransactionSheet(
     show: Boolean,
     onDismiss: () -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
     prefillType: TransactionType? = null,
     prefillCategoryId: String? = null,
     /** 预填来源给的分类名（AI / 通知）：解析失败时用于提示用户手动选择 */
@@ -357,6 +364,11 @@ fun AddTransactionSheet(
     val accountOptions = remember(assetAccounts) {
         assetAccounts.map { it.name }.filter { it.isNotBlank() }.distinct()
     }
+    // 本面板是常驻组合（show=false 也存在，全 App 多个实例）。退款候选与 id 索引
+    // 走 ViewModel 的共享派生状态，避免每个隐藏实例都在组合期对全量账单排序建索引。
+    val refundView by viewModel.refundView.collectAsStateWithLifecycle()
+    val refundCandidates = refundView.candidates
+    val txById = refundView.byId
     // 当前账本：面板内选账本的默认值
     val currentLedger by viewModel.currentLedger.collectAsStateWithLifecycle()
     // 上次落库的类型 / 分类 / 账户（按账本），避免每次从「支出 · 餐饮 · 现金」重选；
@@ -485,6 +497,12 @@ fun AddTransactionSheet(
                 existing?.let { it.type == TransactionType.EXPENSE && it.amountCents < 0L } == true,
         )
     }
+    // 退款关联的原账单 id：退款必须挂到具体订单上，否则原账单永远不知道"已退多少"。
+    // 初值 = 编辑既有退款沿用其关联，或「记退款」入口带入的原账单；手动开退款时自动推荐。
+    var refundSourceId by rememberSaveable(formSession) {
+        mutableLongStateOf(existing?.refundOfId ?: prefillRefundOfId)
+    }
+    var showRefundPicker by remember(formSession) { mutableStateOf(false) }
     var tags by rememberSaveable(formSession) {
         mutableStateOf(existing?.tags ?: prefillTags.orEmpty())
     }
@@ -539,22 +557,19 @@ fun AddTransactionSheet(
     var noteEditing by remember(formSession) { mutableStateOf(false) }
     // 优惠金额：走面板内的自定义键盘，不唤起系统输入法
     var discountEditing by remember(formSession) { mutableStateOf(false) }
-    // 面板内提示：面板开着时全局 snackbar 会被抽屉盖住，必须当场看到的反馈走这里
-    var panelNotice by remember(formSession) { mutableStateOf<String?>(null) }
-    LaunchedEffect(panelNotice) {
-        if (panelNotice != null) {
-            delay(2600)
-            panelNotice = null
-        }
+    // 面板内轻量提示统一走 Toast：面板开着时全局 snackbar 会被抽屉盖住，
+    // 面板内通知条又会挤压分类区 / 键盘内容；Toast 飘一下即走，不占布局。
+    fun panelToast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
     // 预填解析失败时明确告知：名称对不上就不要静默用默认分类 / 账户
     LaunchedEffect(show, prefillCategoryHint, prefillCategoryId, prefillAccount) {
         if (!show || existing != null) return@LaunchedEffect
         when {
             !prefillCategoryHint.isNullOrBlank() && prefillCategoryId == null ->
-                panelNotice = "未识别分类「$prefillCategoryHint」，请手动选择"
+                panelToast("未识别分类「$prefillCategoryHint」，请手动选择")
             !prefillAccount.isNullOrBlank() && prefillAccount !in accountOptions ->
-                panelNotice = "账户「$prefillAccount」不存在，已改用默认账户"
+                panelToast("账户「$prefillAccount」不存在，已改用默认账户")
         }
     }
     var showAccountDialog by remember(formSession) { mutableStateOf(false) }
@@ -697,20 +712,20 @@ fun AddTransactionSheet(
         val cents = signedCents()
         // 允许负数（红字冲销 / 退款），只拦恰好为 0
         if (cents == 0L) {
-            panelNotice = "请输入金额"
+            panelToast("请输入金额")
             return
         }
         // 转账的账户是**可选项**：不选也能落库，只是不联动余额（balanceDeltas 遇到空账户直接跳过）。
         // 因此这里只拦「转出与转入填成同一个账户」；支出 / 收入仍必须选账户。
         if (type == TransactionType.TRANSFER) {
             if (account.isNotBlank() && account == transferToAccount) {
-                panelNotice = "转出与转入不能是同一个账户"
+                panelToast("转出与转入不能是同一个账户")
                 showTransferToDialog = true
                 return
             }
         } else if (account.isBlank()) {
             // 账户必须来自「已添加的账户」，没有就先让用户去选 / 新建
-            panelNotice = "请先选择账户"
+            panelToast("请先选择账户")
             showAccountDialog = true
             return
         }
@@ -724,7 +739,7 @@ fun AddTransactionSheet(
         if (effectiveSplits.size > 1) {
             val sum = effectiveSplits.sumOf { it.amountCents }
             if (sum != cents) {
-                panelNotice = "分账合计 ${formatMoney(sum)} 与金额 ${formatMoney(cents)} 不一致"
+                panelToast("分账合计 ${formatMoney(sum)} 与金额 ${formatMoney(cents)} 不一致")
                 showSplitDialog = true
                 return
             }
@@ -736,8 +751,9 @@ fun AddTransactionSheet(
         // 时分：没动过选择器时保持 -1（只记到天），动过才落真实值
         val minuteOfDay = if (timeChosen) dateTime.hour * 60 + dateTime.minute else -1
         val toAccount = if (type == TransactionType.TRANSFER) transferToAccount else ""
-        // 溯源：编辑时沿用原值，新建时取「记退款」入口带入的原账单 id
-        val finalRefundOfId = existing?.refundOfId ?: prefillRefundOfId
+        // 溯源：只有「支出 + 退款模式」才带原账单关联（编辑态的关联已回填进 refundSourceId，
+        // 用户可在面板里改挂 / 清除）；切了类型或关掉退款就是普通账单，绝不能带残留的 refundOfId
+        val finalRefundOfId = if (type == TransactionType.EXPENSE && refundMode) refundSourceId else 0L
         submitting = true
         if (existing != null) {
             // 编辑模式：交给调用方回写（含余额回滚），而非新增一条
@@ -850,6 +866,29 @@ fun AddTransactionSheet(
             selectedParentId = CategoryCatalog.of(next).let { it.parentId ?: it.id }
         }
         expandedParentId = null
+    }
+
+    /**
+     * 开关退款模式（替代直接翻转 [refundMode]）：
+     * - 打开时若还没关联原账单，自动推荐最近一笔**同账户**正向支出（没有则最近一笔支出），
+     *   并提示可改——绝大多数退款退的就是刚在同一个账户上付的那笔；
+     * - 关闭时清空关联：退款态关掉就落普通账单，不能带残留的 refundOfId。
+     */
+    fun toggleRefund() {
+        if (type != TransactionType.EXPENSE) return
+        refundMode = !refundMode
+        if (refundMode) {
+            if (refundSourceId == 0L) {
+                refundSourceId = refundCandidates.firstOrNull { it.account == account }?.id
+                    ?: refundCandidates.firstOrNull()?.id ?: 0L
+                if (refundSourceId != 0L) {
+                    // 自动关联是轻量提示：Toast 飘一下即可，不占面板布局
+                    panelToast("已自动关联最近一笔同账户支出，点「退款自」可修改")
+                }
+            }
+        } else {
+            refundSourceId = 0L
+        }
     }
 
     // 面板是否「有东西可存」：决定要不要写草稿（也用作「应用模板前先确认覆盖」的判据）
@@ -972,6 +1011,11 @@ fun AddTransactionSheet(
     // ── 草稿：打开时恢复上次退出时的面板状态，改动节流写盘，退出时立即写盘 ──
     var draftChecked by rememberSaveable(formSession) { mutableStateOf(false) }
     LaunchedEffect(formSession, draftChecked) {
+        // 必须等面板真正打开才恢复：本面板是「常驻组合 + show 开关」，全 App 同时存在
+        // 6 个实例（主面板 / 日历 / 账户详情 / 借贷详情 / 账本页），启动时全是 show=false。
+        // 不加这道闸，每个隐藏实例都会在进入 App 时读盘恢复并弹一次
+        // 「已恢复上次未完成的记账」——Toast 连环弹（2026-11-06 实测）。
+        if (!show) return@LaunchedEffect
         if (draftChecked) return@LaunchedEffect
         draftChecked = true
         // 显式预填（AI / 通知 / 日历 / 退款）优先于草稿；refundOfId 默认 0 不算预填。
@@ -1026,7 +1070,7 @@ fun AddTransactionSheet(
         // 展开状态最后恢复：只有该项目确实是一级分类时才展开，否则保持全收起
         expandedParentId = draft.expandedParentId
             ?.takeIf { id -> categories.any { it.id == id && it.parentId == null } }
-        panelNotice = "已恢复上次未完成的记账"
+        panelToast("已恢复上次未完成的记账")
     }
     // 输入过程中仍走 800ms 节流：进程被杀时最多丢最后 0.8 秒的输入；
     // 正常退出由 requestDismiss / show=false 边缘的 persistDraftNow() 立即写盘
@@ -1080,7 +1124,19 @@ fun AddTransactionSheet(
         onConfirm = { result ->
             splits = result
             showSplitDialog = false
-            if (result.isEmpty()) panelNotice = "已取消组合付款"
+            if (result.isEmpty()) panelToast("已取消组合付款")
+        },
+    )
+
+    // 退款关联原账单：从本账本的正向支出里挑一笔挂上；「不关联」= 只记一笔独立负数支出
+    RefundSourcePickerDialog(
+        show = showRefundPicker,
+        candidates = refundCandidates.take(60),
+        selectedId = refundSourceId,
+        onDismissRequest = { showRefundPicker = false },
+        onPick = { id ->
+            refundSourceId = id
+            showRefundPicker = false
         },
     )
 
@@ -1171,7 +1227,7 @@ fun AddTransactionSheet(
                 pendingTemplate = template
             } else {
                 applyTemplate(template)
-                panelNotice = "已应用模板「${template.name.ifBlank { "未命名模板" }}」"
+                panelToast("已应用模板「${template.name.ifBlank { "未命名模板" }}」")
             }
         },
     )
@@ -1186,7 +1242,7 @@ fun AddTransactionSheet(
         onConfirm = {
             pendingTemplate?.let {
                 applyTemplate(it)
-                panelNotice = "已应用模板「${it.name.ifBlank { "未命名模板" }}」"
+                panelToast("已应用模板「${it.name.ifBlank { "未命名模板" }}」")
             }
             pendingTemplate = null
         },
@@ -1331,36 +1387,26 @@ fun AddTransactionSheet(
                             .padding(14.dp),
                     )
                     Spacer(Modifier.width(4.dp))
-                    // 类型切换（三段）：外壳内边距 3 → 2dp，字号交给 [TypeOption] 统一缩小
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(Radius.xl))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .padding(2.dp),
-                    ) {
-                        TypeOption(
-                            label = "支出",
-                            value = TransactionType.EXPENSE,
-                            current = type,
-                            onSelect = { selectType(it) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        TypeOption(
-                            label = "收入",
-                            value = TransactionType.INCOME,
-                            current = type,
-                            onSelect = { selectType(it) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        TypeOption(
-                            label = "转账",
-                            value = TransactionType.TRANSFER,
-                            current = type,
-                            onSelect = { selectType(it) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                    // 类型切换（三段）：反色风格（深槽 + 浅色滑动指示器），圆角 xl
+                    IjiSegmentedRow(
+                        options = TransactionType.entries.toList(),
+                        selected = type,
+                        onSelect = { selectType(it) },
+                        modifier = Modifier.weight(1f),
+                        minSegmentHeight = 30.dp,
+                        label = {
+                            when (it) {
+                                TransactionType.EXPENSE -> "支出"
+                                TransactionType.INCOME -> "收入"
+                                TransactionType.TRANSFER -> "转账"
+                            }
+                        },
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        indicatorColor = MaterialTheme.colorScheme.surface,
+                        selectedContentColor = MaterialTheme.colorScheme.onSurface,
+                        unselectedContentColor = TextSecondary,
+                        cornerRadius = Radius.xl,
+                    )
                     Spacer(Modifier.width(4.dp))
                     // 账本选择：超长账本名省略，不挤压三段切换
                     Row(
@@ -1401,6 +1447,7 @@ fun AddTransactionSheet(
                     expr = expr,
                     displayCents = if (refundMode) kotlin.math.abs(live) else live,
                     refund = refundMode,
+                    type = type,
                 )
                 if (expr.isNotBlank() && live == 0L) {
                     Text(
@@ -1490,9 +1537,6 @@ fun AddTransactionSheet(
                     onEditNote = { noteEditing = true },
                 )
 
-                // 面板内反馈（面板开着时全局 snackbar 会被抽屉挡住）
-                PanelNotice(panelNotice)
-
                 Spacer(Modifier.height(LocalDimens.current.cardGap))
 
                 // ── 功能选择排：常用项横滑 + 「更多」常驻收纳低频项 ──
@@ -1511,7 +1555,7 @@ fun AddTransactionSheet(
                     onOpenTemplates = { showTemplateDialog = true },
                     refund = refundMode,
                     showRefundEntry = type == TransactionType.EXPENSE,
-                    onToggleRefund = { refundMode = !refundMode },
+                    onToggleRefund = { toggleRefund() },
                     splitCount = splits.size,
                     // 转账没有组合概念；退款是负数支出，拆账户语义不成立
                     showSplitEntry = type != TransactionType.TRANSFER && !refundMode,
@@ -1521,6 +1565,20 @@ fun AddTransactionSheet(
                     attachmentCount = attachments.size,
                     onOpenAttachments = { showAttachmentDialog = true },
                 )
+
+                // ── 退款自（仅退款模式）：关联的原账单一览，点开可改挂 / 清除 ──
+                // 退款必须挂到具体订单才有意义：原账单行才会出现「已退 X · 净 Y」，
+                // 退款行下方也会显示它退的是哪一笔。没有关联的退款只是一笔负数支出。
+                if (type == TransactionType.EXPENSE && refundMode) {
+                    Spacer(Modifier.height(LocalDimens.current.cardGap))
+                    RefundSourceRow(
+                        source = txById[refundSourceId],
+                        onClick = {
+                            endNoteEditing()
+                            showRefundPicker = true
+                        },
+                    )
+                }
 
                 // 优惠录入：开启优惠后展示（点开用面板内的自定义键盘输入）
                 if (discountOn) {
@@ -1591,7 +1649,7 @@ fun AddTransactionSheet(
                                     .ijiButtonFocusRing(
                                         shape = com.kyant.capsule.ContinuousRoundedRectangle(Radius.xxl)
                                     ),
-                                colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.buttonColorsPrimary(),
+                                colors = ijiPrimaryButtonColors(),
                             ) {
                                 Text(
                                     if (submitting) "保存中…" else "完成",
@@ -1644,7 +1702,13 @@ fun AddTransactionSheet(
 // ── section 子 Composable（便于复用与预览）──
 
 @Composable
-private fun AmountDisplay(expr: String, displayCents: Long, refund: Boolean = false) {
+private fun AmountDisplay(
+    expr: String,
+    displayCents: Long,
+    refund: Boolean = false,
+    /** 当前选中的类型：金额跟随全局约定染色（消费红 / 收入绿 / 转账中性） */
+    type: TransactionType = TransactionType.EXPENSE,
+) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             // 计算过程（实时算式）：字号 bodyMedium → bodySmall，留白收紧
@@ -1670,8 +1734,12 @@ private fun AmountDisplay(expr: String, displayCents: Long, refund: Boolean = fa
                 }
                 Text(
                     formatMoney(displayCents),
-                    // 负数金额（红字冲销）同样高亮，否则用户会以为键盘没生效
-                    color = if (displayCents != 0L) MaterialTheme.colorScheme.onSurface else TextSecondary,
+                    // 金额跟类型走全局红绿；负数金额（红字冲销）同样高亮，否则用户会以为键盘没生效
+                    color = when (type) {
+                        TransactionType.INCOME -> IncomeGreen
+                        TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurface
+                        TransactionType.EXPENSE -> ExpenseAmount
+                    }.let { if (displayCents != 0L) it else TextSecondary },
                     // 36 → 32sp：金额仍是视觉主角，但不再把面板上半部分撑开
                     fontSize = MaterialTheme.typography.headlineLarge.fontSize,
                     fontWeight = FontWeight.Bold,
@@ -1786,7 +1854,7 @@ private fun SplitPaymentDialog(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             if (row.account.isNotBlank()) {
-                                AccountIconImage(iconKey = row.account, size = 16.dp)
+                                AccountIconImage(iconKey = row.account, size = IjiIconSize.Inline)
                                 Spacer(Modifier.width(6.dp))
                             }
                             Text(
@@ -2090,7 +2158,8 @@ private fun TemplatePickerDialog(
                                 formatMoney(template.amountCents),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = when (template.type) {
-                                    TransactionType.EXPENSE -> MaterialTheme.colorScheme.onSurface
+                                    // 全局约定：消费红 / 收入绿
+                                    TransactionType.EXPENSE -> ExpenseAmount
                                     TransactionType.INCOME -> IncomeGreen
                                     TransactionType.TRANSFER -> TextSecondary
                                 },
@@ -2344,7 +2413,7 @@ private fun ParentCategoryItem(
             CategoryIconImage(
                 name = category.name,
                 color = accent,
-                size = 40.dp,
+                size = IjiIconSize.Grid,
                 selected = selected,
                 categoryId = category.id,
             )
@@ -2455,34 +2524,6 @@ private fun DateNoteRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-    }
-}
-
-/**
- * 面板内提示条：面板打开时全局 snackbar 会被抽屉遮住，校验 / 应用模板这类
- * 「必须当场看到」的反馈统一走这里。空内容时不占高度。
- */
-@Composable
-private fun PanelNotice(text: String?) {
-    // 退场动画期间 text 已置空，先留住最后一条，避免闪成空白
-    var lastText by remember { mutableStateOf("") }
-    if (text != null) lastText = text
-    AnimatedVisibility(
-        visible = text != null,
-        enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
-        exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top),
-    ) {
-        Text(
-            lastText,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-                .clip(RoundedCornerShape(Radius.md))
-                .background(MiuixPrimary.copy(alpha = 0.10f))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MiuixPrimary,
-        )
     }
 }
 
@@ -2603,7 +2644,7 @@ private fun ActionRow(
                     label = account.ifBlank { "账户" },
                     selected = true,
                     onClick = onPickAccount,
-                    leadingIcon = { AccountIconImage(iconKey = account, size = 16.dp) },
+                    leadingIcon = { AccountIconImage(iconKey = account, size = IjiIconSize.Inline) },
                 )
             }
             // 退款：把「先按 − 再输金额」这个暗号变成显式开关
@@ -2871,7 +2912,7 @@ private fun DiscountKeypad(
                     onClick = { onConfirm(parseCents(text.trimEnd('.'))) },
                     cornerRadius = Radius.xxl,
                     // 与面板主键盘同一个主色样式，避免看起来像「不可点」
-                    colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.buttonColorsPrimary(),
+                    colors = ijiPrimaryButtonColors(),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(50.dp),
@@ -3232,7 +3273,7 @@ private fun AccountPickerDialog(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AccountIconImage(iconKey = name, size = 34.dp)
+                        AccountIconImage(iconKey = name, size = IjiIconSize.ListRow)
                         Spacer(Modifier.width(12.dp))
                         Text(
                             name,
@@ -3244,6 +3285,209 @@ private fun AccountPickerDialog(
                         balances[name]?.let {
                             Text(formatMoney(it), style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 退款模式下的「退款自」摘要行：显示当前关联的原账单（分类 + 金额 + 账户 + 日期），
+ * 没有关联时明示「未关联」并引导点选。点击整行打开原账单选择弹窗。
+ */
+@Composable
+private fun RefundSourceRow(source: com.iji.app.data.model.Transaction?, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 46.dp)
+            .clip(RoundedCornerShape(Radius.md))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (source == null) {
+            Text(
+                "退款自",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "未关联 · 点选原账单",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium,
+            )
+        } else {
+            val category = runCatching { CategoryCatalog.of(source.categoryId) }.getOrNull()
+            CategoryIconImage(
+                name = category?.name ?: "分类",
+                color = category?.let { androidx.compose.ui.graphics.Color(it.color) }
+                    ?: MiuixPrimary.copy(alpha = 0.3f),
+                size = 20.dp,
+                categoryId = source.categoryId,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    category?.name ?: "未分类",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    listOf(
+                        source.account.takeIf { it.isNotBlank() },
+                        "${source.date.monthValue}/${source.date.dayOfMonth}",
+                    ).filterNotNull().filter { it.isNotBlank() }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                // 原账单是正向支出，按正数展示；前缀「退款自」由本行标签承担
+                "¥" + formatMoney(source.amountCents),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+/**
+ * 退款关联原账单的选择弹窗：列出本账本最近的正向支出（调用方已裁剪到 60 笔）。
+ *
+ * 每行展示 分类图标 + 分类名 + 账户·日期 + 金额，点击即关联并收起；
+ * 顶部提供「不关联」清空项——退款不挂订单仍可落库（一笔独立负数支出），
+ * 但行上会明确告知这样原账单不会显示已退信息。
+ */
+@Composable
+private fun RefundSourcePickerDialog(
+    show: Boolean,
+    candidates: List<com.iji.app.data.model.Transaction>,
+    selectedId: Long,
+    onDismissRequest: () -> Unit,
+    onPick: (Long) -> Unit,
+) {
+    var query by remember(show) { mutableStateOf("") }
+    val filtered = remember(show, query, candidates) {
+        if (query.isBlank()) candidates
+        else candidates.filter { tx ->
+            val q = query.trim()
+            runCatching { CategoryCatalog.of(tx.categoryId).name }.getOrDefault("").contains(q, true) ||
+                tx.note.contains(q, true) || tx.merchant.contains(q, true) || tx.account.contains(q, true)
+        }
+    }
+    IjiDialog(
+        show = show,
+        onDismissRequest = onDismissRequest,
+        title = "关联原账单",
+    ) {
+        Column {
+            if (candidates.size > 8) {
+                top.yukonga.miuix.kmp.basic.TextField(
+                    value = query,
+                    onValueChange = { query = it.take(30) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "搜索分类 / 备注 / 商家 / 账户",
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            // 「不关联」放在最上面：清空关联是合法选择（负数支出不挂订单）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(
+                        if (selectedId == 0L) MiuixPrimary.copy(alpha = 0.12f) else Color.Transparent,
+                    )
+                    .clickable { onPick(0L) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "不关联原账单",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (selectedId == 0L) MiuixPrimary else TextSecondary,
+                    fontWeight = if (selectedId == 0L) FontWeight.SemiBold else FontWeight.Normal,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "原账单不会显示已退",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+            if (candidates.isEmpty()) {
+                Text(
+                    "本账本还没有可退的支出账单",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(vertical = 10.dp),
+                )
+            }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp),
+            ) {
+                items(filtered, key = { it.id }) { tx ->
+                    val isSel = tx.id == selectedId
+                    val category = runCatching { CategoryCatalog.of(tx.categoryId) }.getOrNull()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(if (isSel) MiuixPrimary.copy(alpha = 0.12f) else Color.Transparent)
+                            .clickable { onPick(tx.id) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CategoryIconImage(
+                            name = category?.name ?: "分类",
+                            color = category?.let { androidx.compose.ui.graphics.Color(it.color) }
+                                ?: MiuixPrimary.copy(alpha = 0.3f),
+                            size = 22.dp,
+                            categoryId = tx.categoryId,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                category?.name ?: "未分类",
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                            )
+                            Text(
+                                listOf(
+                                    tx.note.ifBlank { tx.merchant }.ifBlank { null },
+                                    tx.account.takeIf { it.isNotBlank() },
+                                    "${tx.date.monthValue}/${tx.date.dayOfMonth}",
+                                ).filterNotNull().filter { it.isNotBlank() }.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            formatMoney(tx.amountCents),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isSel) MiuixPrimary else MaterialTheme.colorScheme.onSurface,
+                        )
                     }
                 }
             }
@@ -3340,35 +3584,6 @@ private fun TagSelectDialog(
     }
 }
 
-/** 支出/收入/转账切换按钮 */
-@Composable
-private fun TypeOption(
-    label: String,
-    value: TransactionType,
-    current: TransactionType,
-    onSelect: (TransactionType) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val selected = value == current
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(Radius.xl))
-            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-            .clickable { onSelect(value) }
-            // 纵向内边距 8 → 5dp：三段控件整体更矮
-            .padding(vertical = 5.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            // 字号 16 → 14sp（原本走默认 bodyLarge）
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (selected) MaterialTheme.colorScheme.onSurface else TextSecondary,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        )
-    }
-}
-
 /**
  * 二级分类网格项：圆形图标 + 名称。
  *
@@ -3399,7 +3614,7 @@ private fun CategoryCell(
         CategoryIconImage(
             name = category.name,
             color = accent,
-            size = 36.dp,
+            size = IjiIconSize.GridChild,
             selected = selected,
             categoryId = category.id,
         )

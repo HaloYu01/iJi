@@ -5,6 +5,7 @@ import com.iji.app.budget.BudgetAlertScheduler
 import com.iji.app.budget.BudgetComponents
 import com.iji.app.budget.NotificationHelper
 import com.iji.app.data.db.DbProvider
+import com.iji.app.data.repository.LedgerSelection
 import com.iji.app.data.repository.SettingsRepository
 import com.iji.app.reminder.ReminderScheduler
 import com.iji.app.ui.PerfState
@@ -13,13 +14,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class IjiApplication : Application() {
 
-    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override fun onCreate() {
         super.onCreate()
+        // 偏好设置必须先整体预热：下面的 PerfState / HapticsState / FontScaleState
+        // 会在 onCreate 里同步读取，未预热时每个键都要 runBlocking 读一次 DataStore。
+        // 这里一次读完（含 SharedPreferences 迁移），之后所有 getter 只查内存。
+        runBlocking { SettingsRepository.warmUp(this@IjiApplication) }
+        // 当前账本从设置恢复：否则冷启动先按占位账本查一次空数据，账本列表到达后
+        // 再切账本，让全量 / 按月两条账单 Flow 各重查一遍，首屏就先空后跳账单。
+        LedgerSelection.init(this)
         DbProvider.init(this)
         // 预算组件需要应用上下文（发通知用）；必须在任何预算检查之前初始化
         BudgetComponents.init(this)
@@ -34,17 +41,15 @@ class IjiApplication : Application() {
         com.iji.app.data.repository.CategoryStore.init(this)
         // 本地识别规则：本机 OCR / 文本兜底在拿不到 Context 的地方同步读它，先载入内存
         com.iji.app.ai.LocalRuleStore.init(this)
-        // 预热偏好设置缓存：各设置页在组合期同步读取这些键，未预热会退化成主线程 runBlocking 读盘
-        ioScope.launch { SettingsRepository.warmUp(this@IjiApplication) }
-
-        // 通知渠道（预算 + 记账提醒，幂等）
-        NotificationHelper.createChannels(this)
-        // 预算提醒：每日巡检排期（已存在则保留，不重置周期）
-        runCatching { BudgetAlertScheduler.scheduleDaily(this) }
-            .onFailure { android.util.Log.w("IjiApplication", "预算巡检排期失败", it) }
-        // 记账提醒：按用户开关重新排期（默认关闭）
-        runCatching { ReminderScheduler.reschedule(this) }
-            .onFailure { android.util.Log.w("IjiApplication", "记账提醒排期失败", it) }
+        // 通知渠道与每日排期和首帧无关：放到 IO，别让 WorkManager 排期的多次
+        // binder / DB 往返占用冷启动主线程
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            NotificationHelper.createChannels(this@IjiApplication)
+            runCatching { BudgetAlertScheduler.scheduleDaily(this@IjiApplication) }
+                .onFailure { android.util.Log.w("IjiApplication", "预算巡检排期失败", it) }
+            runCatching { ReminderScheduler.reschedule(this@IjiApplication) }
+                .onFailure { android.util.Log.w("IjiApplication", "记账提醒排期失败", it) }
+        }
 
         // 设置崩溃日志捕获
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()

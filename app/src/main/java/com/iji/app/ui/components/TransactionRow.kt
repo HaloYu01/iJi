@@ -21,6 +21,8 @@ import com.iji.app.ui.theme.Radius
 import com.iji.app.data.model.Transaction
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
+import com.iji.app.ui.theme.ExpenseAmount
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.TextSecondary
@@ -87,7 +89,7 @@ fun TransactionRow(
         CategoryIconImage(
             name = category.name,
             color = Color(category.color),
-            size = 40.dp,
+            size = IjiIconSize.BillRow,
             // 传 id：用户改过名的图标也能按 id 找到（改名不再丢图标）
             categoryId = category.id,
         )
@@ -237,9 +239,10 @@ fun TransactionRow(
             // 否则一笔 ¥100 的分摊在两个账户下都会显示 ¥100
             val shownCents = amountOverrideCents ?: tx.amountCents
             val amountColor = when (tx.type) {
-                // 负数支出=退款（钱收回来）、负数收入=红字，配色跟着符号翻转，与 formatSignedMoney 一致
-                TransactionType.EXPENSE -> if (shownCents < 0) IncomeGreen else MiuixPrimary
-                TransactionType.INCOME -> if (shownCents < 0) MiuixPrimary else IncomeGreen
+                // 全局约定：消费红 / 收入绿；配色跟资金流向翻转——
+                // 负数支出=退款（钱收回来→绿）、负数收入=红字冲正（钱出去→红），与 formatSignedMoney 一致
+                TransactionType.EXPENSE -> if (shownCents < 0) IncomeGreen else ExpenseAmount
+                TransactionType.INCOME -> if (shownCents < 0) ExpenseAmount else IncomeGreen
                 TransactionType.TRANSFER -> TextSecondary
             }.let { if (excluded) TextSecondary else it }
             // 有优惠：同一行「划线原价（小、灰） + 实付（大、彩色）」，字号与颜色双重对比
@@ -265,7 +268,7 @@ fun TransactionRow(
             if (showAccountUnderAmount && tx.account.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AccountIconImage(iconKey = tx.account, size = 16.dp)
+                    AccountIconImage(iconKey = tx.account, size = IjiIconSize.Inline)
                     Spacer(Modifier.width(4.dp))
                     Text(
                         // 组合付款：列出各账户分担额，而不是只显示首选账户

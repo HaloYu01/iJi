@@ -48,6 +48,7 @@ import com.iji.app.ui.components.LocalOverlayBackStack
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.DividerGray
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
@@ -254,7 +255,7 @@ private fun CategoryCell(category: Category, selected: Boolean, onClick: () -> U
         CategoryIconImage(
             name = category.name,
             color = tint,
-            size = 34.dp,
+            size = IjiIconSize.Compact,
             categoryId = category.id,
         )
         Spacer(Modifier.size(4.dp))

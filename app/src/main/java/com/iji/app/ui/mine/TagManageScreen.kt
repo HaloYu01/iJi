@@ -1,12 +1,4 @@
-﻿package com.iji.app.ui.mine
-import com.iji.app.ui.components.LocalSnackbarController
-
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import com.iji.app.ui.components.IjiDialog
-import com.iji.app.ui.theme.MiuixPrimary
-import com.iji.app.ui.theme.LocalDimens
-import com.iji.app.ui.theme.Radius
+package com.iji.app.ui.mine
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,59 +6,79 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iji.app.MainViewModel
 import com.iji.app.data.repository.TagStore
-import kotlinx.coroutines.launch
+import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiSettingsDivider
+import com.iji.app.ui.components.IjiTextAction
+import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiTopBarContentPadding
-import com.iji.app.ui.theme.TextSecondary
 import com.iji.app.ui.theme.AppleRed
-import com.iji.app.ui.theme.AppleSeparator
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IncomeGreen
+import com.iji.app.ui.theme.LocalDimens
+import com.iji.app.ui.theme.MiuixPrimary
+import com.iji.app.ui.theme.Radius
+import com.iji.app.ui.theme.TextSecondary
+import com.iji.app.ui.util.sharedMainViewModel
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Close
-import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+
+/** 标签管理页当前打开的操作（同一时刻只开一个） */
+private sealed interface TagDialog {
+    data object Add : TagDialog
+    data class Rename(val tag: String) : TagDialog
+    data class Delete(val tag: String) : TagDialog
+}
 
 /**
  * 标签管理页。
  *
- * 行结构：`#` 徽章 + 标签名 + 使用笔数（跨账本统计）+ 编辑箭头 + 删除 ×。
- * 使用笔数帮用户在删前判断影响面；标签是标签池，删除只从池里摘掉，
- * 已记账单上的标签字符串保留不动。
+ * 规则：标签只是 DataStore 里的字符串池，账单把标签名以逗号分隔写进 `transactions.tags`，
+ * 是记账时的快照、没有外键。**已被账单使用的标签锁定「编辑 / 删除」**——改名或删除只动
+ * 标签池，账单仍显示旧字符串，会留下「池里没有、账单里有」的不一致。
+ *
+ * 未被使用的标签才允许改名 / 删除，两者都是破坏性操作，弹窗里必须写明结果及影响。
+ * 点整行始终可查看该标签下的关联账单。
  */
 @Composable
 fun TagManageScreen(
     onBack: () -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    onOpenBills: (String) -> Unit,
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
     val scope = rememberCoroutineScope()
-    // 标签为 DataStore 持久化（此前是硬编码常量，重启即丢）
     val tags by TagStore.observe(context)
         .collectAsStateWithLifecycle(initialValue = TagStore.DEFAULT)
-    // 各标签使用笔数：进页 / 标签增删改后查一次（DAO 只取 tags 一列，轻量）
-    var usage by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+
+    // null = 笔数还没统计出来。此时按「锁定」处理，避免首帧短暂露出删除按钮被误点。
+    var usage by remember { mutableStateOf<Map<String, Int>?>(null) }
     LaunchedEffect(tags) { usage = viewModel.tagUsageCounts() }
 
-    var showAddDialog by remember { mutableStateOf(false) }
-    var showEditDialog by remember { mutableStateOf(false) }
-    var editingTag by remember { mutableStateOf("") }
-    var newTagName by remember { mutableStateOf("") }
+    var dialog by remember { mutableStateOf<TagDialog?>(null) }
+    var input by remember { mutableStateOf("") }
+    val inputFocus = remember { FocusRequester() }
 
     MineSubPage(title = "标签管理", onBack = onBack) {
         Column(
@@ -77,19 +89,22 @@ fun TagManageScreen(
                 .padding(top = ijiTopBarContentPadding(), bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            top.yukonga.miuix.kmp.basic.SmallTitle(
+            SmallTitle(
                 text = "全部标签（${tags.size}）",
                 insideMargin = PaddingValues(0.dp),
             )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                RuleLine("锁定：", "有账单在用就不能改名、删除；点整行可查看关联账单。")
+                RuleLine("可修改 / 删除：", "0 笔账单在用时才显示「编辑」「删除」，操作前会弹窗说明结果。")
+                RuleLine("原因：", "账单里的标签是记账时写入的，改标签池不会同步改账单，避免两边对不上。")
+            }
 
-            // 标签列表
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 cornerRadius = Radius.xxl,
-                colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(MaterialTheme.colorScheme.surface),
+                colors = CardDefaults.defaultColors(MaterialTheme.colorScheme.surface),
             ) {
                 if (tags.isEmpty()) {
-                    // 空状态：删光后列表卡不再是空白一块，说清下一步去哪
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -107,75 +122,30 @@ fun TagManageScreen(
                 } else {
                     Column {
                         tags.forEachIndexed { index, tag ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        editingTag = tag
-                                        newTagName = tag
-                                        showEditDialog = true
-                                    }
-                                    .padding(horizontal = 20.dp, vertical = 14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                TagBadge()
-                                Column(Modifier.weight(1f)) {
-                                    Text(tag, style = MaterialTheme.typography.bodyLarge)
-                                    Text(
-                                        (usage[tag] ?: 0).let { n ->
-                                            if (n > 0) "$n 笔账单在用" else "暂无账单使用"
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary,
-                                    )
-                                }
-                                Icon(
-                                    MiuixIcons.ChevronForward,
-                                    contentDescription = "编辑",
-                                    tint = TextSecondary,
-                                    modifier = Modifier
-                                        .padding(start = 6.dp)
-                                        .size(20.dp),
-                                )
-                                // 删除按钮：48dp 命中区（图标 24dp + 四周留白）
-                                Icon(
-                                    MiuixIcons.Close,
-                                    contentDescription = "删除",
-                                    tint = AppleRed,
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .clickable {
-                                            scope.launch {
-                                                TagStore.remove(context, tag)
-                                                snackbar.show("已删除：$tag")
-                                            }
-                                        }
-                                        .padding(12.dp),
-                                )
-                            }
-                            if (index < tags.size - 1) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 20.dp)
-                                        .height(0.5.dp)
-                                        .background(AppleSeparator),
-                                )
-                            }
+                            TagRow(
+                                tag = tag,
+                                usage = usage,
+                                onOpenBills = { onOpenBills(tag) },
+                                onRename = {
+                                    input = tag
+                                    dialog = TagDialog.Rename(tag)
+                                },
+                                onDelete = { dialog = TagDialog.Delete(tag) },
+                            )
+                            if (index < tags.lastIndex) IjiSettingsDivider()
                         }
                     }
                 }
             }
 
-            // 添加标签：主操作按钮卡（与「数据与备份」页的 ActionCard 同款样式）
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Radius.xxl))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
                     .clickable {
-                        newTagName = ""
-                        showAddDialog = true
+                        input = ""
+                        dialog = TagDialog.Add
                     }
                     .padding(vertical = 16.dp),
                 contentAlignment = Alignment.Center,
@@ -190,89 +160,189 @@ fun TagManageScreen(
         }
     }
 
-    // 添加标签弹窗（Miuix 弹窗：大屏自动居中 + 限宽）
-    val addTagFocus = remember { FocusRequester() }
+    val current = dialog
     IjiDialog(
-        show = showAddDialog,
-        onDismissRequest = { showAddDialog = false },
-        title = "添加标签",
-        autoFocusRequester = addTagFocus,
+        show = current != null,
+        onDismissRequest = { dialog = null },
+        title = when (current) {
+            is TagDialog.Add -> "添加标签"
+            is TagDialog.Rename -> "编辑标签"
+            is TagDialog.Delete -> "删除标签"
+            null -> null
+        },
+        summary = when (current) {
+            is TagDialog.Rename -> "确定把「#${current.tag}」改名吗？"
+            is TagDialog.Delete -> "确定删除「#${current.tag}」吗？该标签当前没有账单使用。"
+            else -> null
+        },
+        confirmText = when (current) {
+            is TagDialog.Rename -> "保存"
+            is TagDialog.Delete -> "删除"
+            else -> "添加"
+        },
+        confirmColor = if (current is TagDialog.Delete) AppleRed else null,
+        autoFocusRequester = inputFocus.takeIf {
+            current is TagDialog.Add || current is TagDialog.Rename
+        },
         onConfirm = {
-            if (newTagName.isNotBlank()) {
-                val name = newTagName
-                scope.launch {
-                    if (TagStore.add(context, name)) {
-                        snackbar.show("已添加：$name")
+            when (current) {
+                is TagDialog.Add -> {
+                    val name = input
+                    if (name.isBlank()) {
+                        snackbar.show("请输入标签名称")
                     } else {
-                        snackbar.show("标签已存在")
+                        scope.launch {
+                            snackbar.show(
+                                if (TagStore.add(context, name)) "已添加：$name" else "标签已存在",
+                            )
+                        }
+                        dialog = null
                     }
                 }
-                showAddDialog = false
-            } else {
-                snackbar.show("请输入标签名称")
+                is TagDialog.Rename -> {
+                    val old = current.tag
+                    val now = input.trim()
+                    when {
+                        now.isBlank() -> snackbar.show("请输入标签名称")
+                        // 改名 = remove(old) + add(now)：新名已存在会让 remove 先成功、
+                        // add 静默失败，旧标签凭空消失，必须先拦
+                        now != old && tags.contains(now) -> snackbar.show("已存在同名标签")
+                        else -> {
+                            scope.launch {
+                                if (now != old) {
+                                    TagStore.remove(context, old)
+                                    TagStore.add(context, now)
+                                }
+                                snackbar.show("已更新：$now")
+                            }
+                            dialog = null
+                        }
+                    }
+                }
+                is TagDialog.Delete -> {
+                    val name = current.tag
+                    dialog = null
+                    scope.launch {
+                        TagStore.remove(context, name)
+                        snackbar.show("已删除：$name")
+                    }
+                }
+                null -> Unit
             }
         },
     ) {
-        TextField(
-            value = newTagName,
-            onValueChange = { newTagName = it.take(12) },
-            modifier = Modifier.fillMaxWidth().focusRequester(addTagFocus),
-            label = "标签名称",
-        )
-    }
-
-    // 编辑标签弹窗（Miuix 弹窗：大屏自动居中 + 限宽）
-    val editTagFocus = remember { FocusRequester() }
-    IjiDialog(
-        show = showEditDialog,
-        onDismissRequest = { showEditDialog = false },
-        title = "编辑标签",
-        confirmText = "保存",
-        autoFocusRequester = editTagFocus,
-        onConfirm = {
-            val old = editingTag
-            val now = newTagName.trim()
-            if (now.isBlank()) {
-                snackbar.show("请输入标签名称")
-            } else if (now != old && tags.contains(now)) {
-                // 重名必须拦截：下面是「删旧 + 加新」两步，若新名已存在，
-                // remove 会先删掉旧名、add 再静默失败 —— 旧标签就凭空丢了
-                snackbar.show("已存在同名标签")
-            } else {
-                scope.launch {
-                    // 改名 = 删除旧名 + 追加新名，保持 TagStore 接口简单（无需额外 rename 方法）
-                    if (now != old) {
-                        TagStore.remove(context, old)
-                        TagStore.add(context, now)
-                    }
-                    snackbar.show("已更新：$now")
+        when (current) {
+            is TagDialog.Add, is TagDialog.Rename -> {
+                TextField(
+                    value = input,
+                    onValueChange = { input = it.take(12) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(inputFocus),
+                    label = "标签名称",
+                )
+                if (current is TagDialog.Rename) {
+                    Spacer(Modifier.height(10.dp))
+                    ImpactHint(
+                        result = "标签池里的名称改为新名字，列表立即刷新；以后记一笔只能选新名。",
+                        impact = "已记账单上的标签是记账时写入的字符串，不会跟着改；若以后有账单用了新名，再改名时旧账单仍显示旧名。",
+                    )
                 }
-                showEditDialog = false
             }
-        },
-    ) {
-        TextField(
-            value = newTagName,
-            onValueChange = { newTagName = it.take(12) },
-            modifier = Modifier.fillMaxWidth().focusRequester(editTagFocus),
-            label = "标签名称",
-        )
+            is TagDialog.Delete -> ImpactHint(
+                result = "该标签从标签池移除，不再出现在管理列表和记一笔的标签选择里。",
+                impact = "账单不会被删除，已记账单上的标签显示不受影响；日后重新添加同名标签，旧账单会重新归入该标签。",
+            )
+            null -> Unit
+        }
     }
 }
 
-/** 行首 `#` 徽章：几何与 RowLeadingIcon 一致（28dp 圆角方块），色调用标签选中色（记账面板同款绿） */
+/** 标签行：整行查看账单；只有「未被使用」的标签才给编辑 / 删除入口 */
+@Composable
+private fun TagRow(
+    tag: String,
+    usage: Map<String, Int>?,
+    onOpenBills: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val counting = usage == null
+    val count = usage?.get(tag) ?: 0
+    val locked = counting || count > 0
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenBills)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TagBadge()
+        Column(Modifier.weight(1f)) {
+            Text(tag, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                when {
+                    counting -> "正在统计账单…"
+                    count > 0 -> "$count 笔账单在用 · 编辑与删除已锁定"
+                    else -> "暂无账单 · 点击查看"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+        }
+        if (!locked) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                IjiTextAction(text = "编辑", compact = true, onClick = onRename)
+                IjiTextAction(
+                    text = "删除",
+                    compact = true,
+                    color = AppleRed,
+                    onClick = onDelete,
+                )
+            }
+        }
+    }
+}
+
+/** 破坏性操作的「结果 / 影响」说明，编辑与删除共用 */
+@Composable
+private fun ImpactHint(result: String, impact: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("结果：$result", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+        Text("影响：$impact", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    }
+}
+
+/** 规则块的一行：加粗前缀 + 说明 */
+@Composable
+private fun RuleLine(label: String, text: String) {
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(label) }
+            append(text)
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = TextSecondary,
+    )
+}
+
+/** 行首 `#` 徽章，色调用标签选中色 */
 @Composable
 private fun TagBadge() {
     Box(
         modifier = Modifier
             .padding(end = 12.dp)
-            .size(28.dp)
+            .size(IjiIconSize.BadgeBox)
             .background(IncomeGreen.copy(alpha = 0.14f), RoundedCornerShape(Radius.sm)),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             "#",
-            style = MaterialTheme.typography.labelLarge,
+            fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
             color = IncomeGreen,
         )

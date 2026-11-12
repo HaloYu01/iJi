@@ -30,17 +30,12 @@ data class Currency(
         // 日元没有分位，但符号刻意与人民币区分（两个「¥」并列会看不出记的是哪国钱）
         val JPY = Currency("JPY", "JP¥", "日元")
         val KRW = Currency("KRW", "₩", "韩元")
-        val SGD = Currency("SGD", "S$", "新加坡元")
-        val MYR = Currency("MYR", "RM", "马来西亚林吉特")
-        val THB = Currency("THB", "฿", "泰铢")
         val AUD = Currency("AUD", "A$", "澳元")
-        val CAD = Currency("CAD", "C$", "加元")
         val RUB = Currency("RUB", "₽", "卢布")
 
         /** 全部可选币种（选择器用）；顺序 = 常用程度 */
         val all: List<Currency> = listOf(
-            CNY, HKD, TWD, USD, EUR, GBP, JPY, KRW,
-            SGD, MYR, THB, AUD, CAD, RUB,
+            CNY, HKD, TWD, USD, EUR, GBP, JPY, KRW, AUD, RUB,
         )
 
         /** 代码 → 币种；未知 / 空值一律回落到人民币（老数据只有 CNY） */

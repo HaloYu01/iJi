@@ -29,4 +29,10 @@ data class ImportHistoryEntity(
     val okCount: Int = 0,
     val failedCount: Int = 0,
     val importedAtMillis: Long = 0L,
+    /** 本批写入的账单 id（逗号分隔）；撤销后置空，payload 仍留着供重新导入 */
+    val recordIds: String = "",
+    /** 账单快照（gzip + Base64 的备份 JSON） */
+    val payload: String = "",
+    /** 本批是否已撤销 */
+    val undone: Boolean = false,
 )

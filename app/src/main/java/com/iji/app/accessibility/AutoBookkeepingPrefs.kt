@@ -18,9 +18,19 @@ object AutoBookkeepingPrefs {
     const val KEY_LEDGER = "auto_bookkeeping_ledger"
     const val KEY_NOTE_TEMPLATE = "auto_bookkeeping_note_template"
     const val KEY_DEDUP_SECONDS = "auto_bookkeeping_dedup_seconds"
+    /** 应用内逻辑总闸：关掉后无障碍服务不再发「待记账」提示，系统授权保持不变 */
+    const val KEY_MASTER_ENABLED = "auto_bookkeeping_enabled"
 
     const val DEFAULT_NOTE_TEMPLATE = "{商户}"
     const val DEFAULT_DEDUP_SECONDS = 60
+
+    /** 默认开：与既有行为一致，升级用户不会突然收不到提示 */
+    fun masterEnabled(context: Context): Boolean =
+        SettingsRepository.getBoolean(context, KEY_MASTER_ENABLED, true)
+
+    fun setMasterEnabled(context: Context, enabled: Boolean) {
+        SettingsRepository.setBoolean(context, KEY_MASTER_ENABLED, enabled)
+    }
 
     /** 可选窗口（秒）：太短会重复入账，太长会把两笔真实同额消费合并 */
     val DEDUP_OPTIONS = listOf(30, 60, 120, 300)
@@ -46,12 +56,12 @@ object AutoBookkeepingPrefs {
         SettingsRepository.setInt(context, KEY_DEDUP_SECONDS, seconds)
     }
 
-    /** 设置里选了账本就用它，否则跟随用户当前账本（纯函数，可单测） */
+    /** 设置里选了账本就用它，否则跟随用户当前账本 */
     fun effectiveLedger(setting: String, current: String): String =
         setting.ifBlank { current }
 
     /**
-     * 按模板生成备注（纯函数，可单测）。
+     * 按模板生成备注。
      *
      * 未知占位符原样保留（用户写错时能看出是模板没生效，而不是被静默吞掉）；
      * 模板为空或结果为空时回退商户名，避免账单没有备注。

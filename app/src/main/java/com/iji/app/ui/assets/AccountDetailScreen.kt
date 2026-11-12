@@ -1,10 +1,18 @@
 package com.iji.app.ui.assets
 
 import android.content.Context
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +29,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.iji.app.ui.components.menu.AnchoredIconDropdownMenu
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenu
+import com.iji.app.ui.components.menu.LiquidGlassDropdownOverlayHost
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenuItem
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -65,6 +76,7 @@ import com.kyant.capsule.ContinuousRoundedRectangle
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import java.time.LocalDate
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 账户详情页：当前余额 + 最近交易记录 + 新增一笔交易 + 导出 / 编辑账户。
@@ -77,7 +89,7 @@ fun AccountDetailScreen(
     onNavigateEdit: (Long) -> Unit = {},
     /** 进入对账页，并把本账户预选为作用域 */
     onNavigateReconcile: (String) -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
     viewModel: AssetsViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -131,6 +143,9 @@ fun AccountDetailScreen(
     }
 
     var menuOpen by remember { mutableStateOf(false) }
+    // 下拉面板锚点（占位槽左上角，root 坐标）与展开 fraction（外部持有，1:1 控件要求）
+    val menuAnchor = remember { mutableStateOf(Rect.Zero) }
+    val menuFraction = remember { Animatable(0f) }
     var showAdd by remember { mutableStateOf(false) }
     // 交易分页：原先直接 take(50) 静默截断，用户会以为只有 50 笔
     var visibleCount by remember(accountId) { mutableStateOf(DETAIL_PAGE_SIZE) }
@@ -194,37 +209,31 @@ fun AccountDetailScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            AnchoredIconDropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-                modifier = Modifier.size(48.dp),
-                // 每次重组直接构建（不缓存）：保证 onClick 捕获最新的 account / accountTxs
-                items = listOf(
-                    DropdownItem(
-                        text = "编辑账户",
-                        onClick = { account?.let { onNavigateEdit(it.id) } },
-                    ),
-                    DropdownItem(
-                        text = "导出 CSV",
-                        onClick = {
-                            if (accountTxs.isEmpty()) {
-                                snackbar.show("该账户暂无交易可导出")
-                            } else {
-                                exportLauncher.launch("${account?.name ?: "账户"}_交易.csv")
-                            }
-                        },
-                    ),
-                ),
+            // 占位槽：下拉面板的定位锚 + 点击源（popup 层的收起态玻璃钮在收起后即卸载，
+            // 展开点击必须由本锚点承接——与 AssetsScreen 的 onMenuTap 同模式）
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable(
+                        // 触发钮无默认涟漪（NexioSchedule 同款）：反馈由面板原地弹出承接
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { menuOpen = true }
+                    .onGloballyPositioned { menuAnchor.value = it.boundsInWindow() },
+                contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .clickable { menuOpen = true },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    ThreeDotsIcon(tint = MaterialTheme.colorScheme.onBackground)
-                }
+                ThreeDotsIcon(
+                    tint = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.graphicsLayer {
+                        // 一镜到底（NexioSchedule）：图标随 fraction 向面板内部（左下）
+                        // 漂移并提前淡完（k=2.5）；收起以更小系数更早浮现（k=1.7）
+                        val iconK = if (menuOpen) 2.5f else 1.7f
+                        val p = (menuFraction.value * iconK).coerceIn(0f, 1f)
+                        alpha = 1f - p
+                        translationX = -p * 10.dp.toPx()
+                        translationY = p * 10.dp.toPx()
+                    },
+                )
             }
         }
 
@@ -346,20 +355,12 @@ fun AccountDetailScreen(
                 }
             } else if (accountTxs.isEmpty()) {
                 item(key = "recent-empty") {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        StateView(
-                            state = ContentState.Empty("这个账户还没有交易"),
-                            areaVerticalPadding = 20.dp,
-                        )
-                        IjiTextAction(
-                            text = "记一笔",
-                            onClick = { showAdd = true },
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
+                    // 空态只说明状态：记账入口由上方「＋ 新增一笔交易」和底部全局「＋」承担，
+                    // 这里不再重复放「记一笔」。
+                    StateView(
+                        state = ContentState.Empty("这个账户还没有交易"),
+                        areaVerticalPadding = 20.dp,
+                    )
                 }
             } else {
                 items(accountTxs.take(visibleCount), key = { it.id }) { tx ->
@@ -390,6 +391,50 @@ fun AccountDetailScreen(
             }
 
             item { Spacer(Modifier.height(24.dp)) }
+        }
+
+        // 下拉菜单 overlay：NexioSchedule 接入模式——面板长在全屏覆盖层（不占顶栏布局），
+        // graphicsLayer 平移到占位槽位置（对齐 48dp 占位中心，控件自带 24dp 阴影内缩）。
+        // ⚠️ 必须包 LiquidGlassDropdownOverlayHost（popup 层）：菜单的 drawBackdrop 采样
+        // LocalAppBackdrop（NavHost 录制层），节点若落在本页布局树内会被录进采样图 →
+        // RenderNode 自引用 → RenderThread 无限递归 → SIGSEGV（点开详情页即崩，实测）。
+        val backdrop = LocalAppBackdrop.current
+        if (backdrop != null) {
+            LiquidGlassDropdownOverlayHost(expanded = menuOpen, onOutsideTap = { menuOpen = false }) {
+                LiquidGlassDropdownMenu(
+                    show = menuOpen,
+                    backdrop = backdrop,
+                    fraction = menuFraction,
+                    onDismiss = { menuOpen = false },
+                    // 覆盖式（End）：控制盒**右上角**恒 = 锚右 + 26dp——面板从三点按钮
+                    // 位置向左下生长覆盖触发器，收起缩回按钮位置与图标衔接
+                    modifier = Modifier
+                        .graphicsLayer {
+                            alpha = (menuFraction.value.coerceAtLeast(0f) / 0.3f).coerceIn(0f, 1f)
+                            translationX = menuAnchor.value.right + 26.dp.toPx() - size.width
+                            translationY = menuAnchor.value.top - 26.dp.toPx()
+                        },
+                ) {
+                    LiquidGlassDropdownMenuItem(
+                        text = "编辑账户",
+                        onClick = {
+                            menuOpen = false
+                            account?.let { onNavigateEdit(it.id) }
+                        },
+                    )
+                    LiquidGlassDropdownMenuItem(
+                        text = "导出 CSV",
+                        onClick = {
+                            menuOpen = false
+                            if (accountTxs.isEmpty()) {
+                                snackbar.show("该账户暂无交易可导出")
+                            } else {
+                                exportLauncher.launch("${account?.name ?: "账户"}_交易.csv")
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 

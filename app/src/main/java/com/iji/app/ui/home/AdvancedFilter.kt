@@ -19,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,7 +104,48 @@ data class SearchFilter(
     }
 }
 
-/** 单笔账单是否命中筛选条件（不含"报销列 / 未对账"两个额外开关，由调用方叠加） */
+/**
+ * [SearchFilter] 的 [androidx.compose.runtime.saveable.rememberSaveable] Saver。
+ *
+ * 为什么需要它：filter 决定列表内容，必须随 Navigation 状态保存（tab 切走再回来、
+ * 进程重建后筛选都还在，恢复的滚动位置对应的才是同一批数据）；而 SearchFilter 里的
+ * LocalDate / 枚举 / Set 不是 autoSaver 能存的基本类型，手工编解码——
+ * LocalDate 走 ISO-8601 `toString` / `parse` 原样往返，枚举走 name，分类 id 集合走字符串列表。
+ */
+// compose runtime-saveable 1.12.0 起 listSaver 返回 Saver<T, O>（O = 列表元素类型），
+// 不再是旧版的 Saver<T, List<O>>；restore 时从 List<Any> 取值，语义不变
+val SearchFilterSaver: Saver<SearchFilter, Any> = listSaver(
+    save = { f ->
+        listOf(
+            f.query,
+            f.type?.name.orEmpty(),
+            f.scope.name,
+            f.amountMinYuan,
+            f.amountMaxYuan,
+            f.fromText,
+            f.toText,
+            f.fromDate?.toString().orEmpty(),
+            f.toDate?.toString().orEmpty(),
+            ArrayList(f.categoryIds),
+        )
+    },
+    restore = { v ->
+        SearchFilter(
+            query = v[0] as String,
+            type = (v[1] as String).takeIf { it.isNotEmpty() }?.let(TransactionType::valueOf),
+            scope = SearchScope.valueOf(v[2] as String),
+            amountMinYuan = v[3] as String,
+            amountMaxYuan = v[4] as String,
+            fromText = v[5] as String,
+            toText = v[6] as String,
+            fromDate = (v[7] as String).takeIf { it.isNotEmpty() }?.let(LocalDate::parse),
+            toDate = (v[8] as String).takeIf { it.isNotEmpty() }?.let(LocalDate::parse),
+            categoryIds = (v[9] as List<*>).filterIsInstance<String>().toSet(),
+        )
+    },
+)
+
+/** 单笔账单是否命中筛选条件（不含「报销列」开关，由调用方叠加） */
 internal fun Transaction.matchesFilter(f: SearchFilter): Boolean {
     val q = f.query.trim()
     if (q.isNotBlank() && !matchesKeyword(q)) return false

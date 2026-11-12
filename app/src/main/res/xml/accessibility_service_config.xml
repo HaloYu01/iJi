@@ -3,8 +3,10 @@
     支付通知自动记账所需的无障碍配置。
 
     权限范围刻意收窄：
-    - 只监听「通知内容变化」这一种事件（notificationFilter）
-    - **不** 要求读取窗口内容（canRetrieveWindowContent=false）、不要求手势操作、不模拟点击
+    - 只监听「通知内容变化」和「窗口切换」两类事件
+    - 窗口切换事件**只取 event.packageName 记住前台是哪个 App**（用于识屏判断账单来源），
+      不遍历控件树、不读取界面文字/结构；**不**要求读取窗口内容（canRetrieveWindowContent=false），
+      不要求手势操作、不模拟点击
     - 只额外声明 canTakeScreenshot：由**用户主动点击**「截取屏幕」时取一帧当前画面做账单识别
 
     canTakeScreenshot 的用途与边界：
@@ -13,7 +15,7 @@
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_payment_desc"
-    android:accessibilityEventTypes="typeNotificationStateChanged"
+    android:accessibilityEventTypes="typeNotificationStateChanged|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="200"
     android:canRetrieveWindowContent="false"

@@ -49,12 +49,13 @@ data class Budget(
     /** 是否启用结转：上期结余（未用完的额度）滚入本期预算 */
     val carryOver: Boolean = false,
     /**
-     * 上期结转进来的额度（分）。
+     * 自定义结转额度（分）。
      *
-     * ⚠️ **不参与额度计算**：结余额度改为按上期真实结余**实时计算**
-     * （见 `BudgetRepository.rolloverCentsFor`），本字段仅为备份 / 兼容保留。
-     * 原因：结算是"周期切换时跑一次"的定时任务，App 没被打开就不会执行，
-     * 存下来的值必然过期；实时算则永远等于"上期到底剩了多少"。
+     * `0` = 未设置，由 `BudgetRepository.rolloverCentsFor` 按上期真实结余**实时计算**
+     * （结算是周期切换时才跑的任务，落库值会过期，所以自动模式不读库）；
+     * `> 0` = 用户设定的固定额度，每期直接采用该值，不再自动结算。
+     *
+     * 复用原有列：旧数据默认 0、行为不变，无需数据库升级。
      */
     val rolloverCents: Long = 0L,
     val startEpochDay: Long = 0L,
@@ -78,8 +79,9 @@ data class BudgetProgress(
     val period: BudgetPeriod,
     val spentCents: Long,
     /**
-     * 本期从上一周期结转进来的额度（分）；未启用结转时为 0。
-     * 由 `BudgetRepository.rolloverCentsFor` 按上期真实结余实时算出，不是读库里存的旧值。
+     * 本期结转进来的额度（分）；未启用结转时为 0。
+     * 由 `BudgetRepository.rolloverCentsFor` 给出：设了固定金额就用该值，
+     * 否则按上期真实结余实时算出（不读库里存的旧值）。
      */
     val rolloverCents: Long = 0L,
 ) {

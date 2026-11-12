@@ -30,7 +30,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -531,11 +531,15 @@ fun CollapsibleTopBar(
                     Modifier
                         .layoutId("title")
                         .padding(horizontal = CollapsibleTopBarDefaults.TitlePadding)
+                        // 模糊半径在**绘制期**读取（graphicsLayer 块内读 state = 订阅 draw）。
+                        // 此前 `.blur(Animatable.value)` 在组合期读，小标题弹簧动画每帧写值
+                        // 会把整条顶栏内容逐帧重组——滚动折叠期的隐性 CPU 大头。
                         .graphicsLayer {
                             alpha = smallTitleAlpha.value
                             translationY = smallTitleTranslationY.value
-                        }
-                        .blur(Dp(smallTitleBlur.value)),
+                            val r = smallTitleBlur.value.dp.toPx()
+                            renderEffect = if (r > 0.5f) BlurEffect(r, r) else null
+                        },
                 ) {
                     Text(
                         text = title,
@@ -562,8 +566,15 @@ fun CollapsibleTopBar(
                             .layoutId("largeTitle")
                             .padding(top = CollapsibleTopBarDefaults.CollapsedHeight)
                             .padding(horizontal = CollapsibleTopBarDefaults.TitlePadding)
-                            .graphicsLayer { alpha = largeTitleAlpha() }
-                            .blur(largeTitleBlur()),
+                            // alpha 与模糊半径都在**绘制期**读取：折叠动画每帧写 heightOffset，
+                            // 此前 `.blur(largeTitleBlur())` 在组合期读 collapsedFraction，
+                            // 折叠期间整条顶栏内容逐帧重组 + 重新测量（startAction/endAction
+                            // 玻璃按钮全部跟着重建）。搬进 graphicsLayer 后只重放 draw。
+                            .graphicsLayer {
+                                alpha = largeTitleAlpha()
+                                val r = largeTitleBlur()
+                                renderEffect = if (r > 0.5.dp) BlurEffect(r.toPx(), r.toPx()) else null
+                            },
                     ) {
                         Column(
                             modifier = Modifier.onSizeChanged { updateHeightOffsetLimit(it.height) },

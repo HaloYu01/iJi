@@ -56,7 +56,9 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
  * 几个刻意的设计：
  * - 分类只给**下拉胶囊**而不是自由输入：手写一个不存在的分类名，记账面板会提示「未识别分类」，
  *   等于让用户自己埋坑；分类名是数据（可改名），所以列表实时取自 [CategoryCatalog]。
- * - 关键词支持「一行一个」也支持逗号分隔：从别处粘贴词表是最常见的用法。
+ * - 关键词支持「一行一个」也支持逗号分隔：从别处粘贴词表是最常见的用法；正则模式下每行一条。
+ * - 金额范围 / 正则是可选条件（AutoAccounting 的 moneyRange / 正则匹配）：留空 = 不限，
+ *   保持「一条规则最低只要一个关键词」的简单心智。
  * - 内置规则同样可改可删（「恢复内置规则」能补回来），不做只读白名单。
  */
 @Composable
@@ -75,6 +77,13 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
     var keywordsText by remember(ruleId) {
         mutableStateOf(LocalRuleEngine.keywordsText(existing?.keywords.orEmpty()))
     }
+    var regexOn by remember(ruleId) { mutableStateOf(existing?.regex ?: false) }
+    var moneyMinText by remember(ruleId) {
+        mutableStateOf(existing?.moneyMin?.let { LocalRule.amountText(it) }.orEmpty())
+    }
+    var moneyMaxText by remember(ruleId) {
+        mutableStateOf(existing?.moneyMax?.let { LocalRule.amountText(it) }.orEmpty())
+    }
     var enabled by remember(ruleId) { mutableStateOf(existing?.enabled ?: true) }
     var showDelete by remember { mutableStateOf(false) }
     var showCategoryPicker by remember { mutableStateOf(false) }
@@ -91,6 +100,21 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
             snackbar.show("至少要有一个关键词，否则这条规则永远不会命中")
             return
         }
+        // 金额范围：空 = 不限；填了就必须是数字，且下限不能大于上限
+        val moneyMin = moneyMinText.trim().toDoubleOrNull()
+        val moneyMax = moneyMaxText.trim().toDoubleOrNull()
+        if (moneyMinText.isNotBlank() && moneyMin == null) {
+            snackbar.show("金额下限不是数字")
+            return
+        }
+        if (moneyMaxText.isNotBlank() && moneyMax == null) {
+            snackbar.show("金额上限不是数字")
+            return
+        }
+        if (moneyMin != null && moneyMax != null && moneyMin > moneyMax) {
+            snackbar.show("金额下限不能大于上限")
+            return
+        }
         val rule = LocalRule(
             id = existing?.id ?: LocalRuleStore.newRuleId(),
             name = name.trim(),
@@ -100,6 +124,9 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
             keywords = keywords,
             enabled = enabled,
             builtin = existing?.builtin ?: false,
+            moneyMin = moneyMin,
+            moneyMax = moneyMax,
+            regex = regexOn,
         )
         if (!LocalRuleStore.upsert(context, rule)) {
             snackbar.show("保存失败，请重试")
@@ -185,12 +212,57 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(150.dp),
-                        label = "命中任意一个即算匹配",
+                        label = if (regexOn) "每行一条正则表达式" else "命中任意一个即算匹配",
                         useLabelAsPlaceholder = true,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "逗号或换行分隔，不区分大小写，共 ${keywords.size} 个",
+                        if (regexOn) {
+                            "正则模式，如 ^晚餐|夜宵$；坏的正则会被跳过，共 ${keywords.size} 条"
+                        } else {
+                            "逗号或换行分隔，不区分大小写，共 ${keywords.size} 个"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    IjiSwitchRow(
+                        title = "按正则匹配关键词",
+                        desc = "每行一条正则表达式（不区分大小写）；关闭则按普通关键词包含匹配",
+                        checked = regexOn,
+                        onCheckedChange = { regexOn = it },
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                IjiFormDivider()
+                // 金额范围（AutoAccounting 的 moneyRange 条件）：两端都空 = 不限金额
+                Column(Modifier.padding(16.dp)) {
+                    Text("金额范围（元，可选）", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        TextField(
+                            value = moneyMinText,
+                            onValueChange = { moneyMinText = it },
+                            modifier = Modifier.weight(1f),
+                            label = "下限",
+                            useLabelAsPlaceholder = true,
+                        )
+                        Text("—", color = TextSecondary)
+                        TextField(
+                            value = moneyMaxText,
+                            onValueChange = { moneyMaxText = it },
+                            modifier = Modifier.weight(1f),
+                            label = "上限",
+                            useLabelAsPlaceholder = true,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "只对解析出金额的账单生效；留空表示不限",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                     )

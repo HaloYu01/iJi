@@ -2,6 +2,7 @@
 .gradle/
 build/
 app/build/
+app/release/
 .kotlin/
 /local.properties
 
@@ -12,11 +13,13 @@ app/build/
 
 # ── 本机工具与临时产物（不要进版本库）──
 .codebuddy/
+.zcode/
 _harness_out/
 _parser_harness.java
 build_log_*.txt
 fix_nl.py
 fix_prefill.py
+STB.kt
 
 # ── 签名 / 密钥：一旦提交就再也删不干净 ──
 *.jks

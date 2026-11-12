@@ -7,6 +7,7 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.iji.app.MainActivity
 import com.iji.app.R
+import com.iji.app.accessibility.CapturePreferences
 import com.iji.app.accessibility.ScreenCaptureFlow
 import com.iji.app.budget.NotificationHelper
 import com.iji.app.ui.Routes
@@ -33,11 +34,16 @@ class ScreenCaptureTileService : TileService() {
     }
 
     override fun onClick() {
-        if (ShizukuBridge.state(this) != ShizukuState.READY) {
-            openCaptureSettings()
-            return
+        // 按当前授权方式分流：Shizuku 可直接收起下拉栏再截；只有无障碍时不做「截到下拉面板」
+        // 的假识屏，而是把用户带回应用内的「立即识屏」（那里有退后台倒计时）。
+        when (CapturePreferences.resolve(this)) {
+            CapturePreferences.MODE_SHIZUKU -> ScreenCaptureFlow.startWithShizuku(
+                this,
+                delayMillis = CapturePreferences.captureDelayMs(this),
+                fromShade = true,
+            )
+            else -> openCaptureSettings()
         }
-        ScreenCaptureFlow.startWithShizuku(this, fromShade = true)
     }
 
     /** 回到应用内的「自动记账 → Shizuku」入口，那里能申请授权 / 打开 Shizuku */

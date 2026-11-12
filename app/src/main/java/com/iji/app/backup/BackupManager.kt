@@ -6,7 +6,9 @@ import com.iji.app.data.db.DbProvider
 import com.iji.app.data.repository.BackupRepository
 import com.iji.app.data.repository.ConfigBackupRepository
 import com.iji.app.data.repository.TransactionRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -55,19 +57,20 @@ object BackupManager {
     /** 备份文件名（本地与网盘共用同一命名约定，便于人工核对「云上那份是哪次」） */
     fun newBackupName(nowMillis: Long = System.currentTimeMillis()): String = "$PREFIX$nowMillis$EXT"
 
-    /** 执行一次加密备份；成功返回 true */
-    suspend fun writeAutoBackup(context: Context): Boolean {
-        val dir = backupDir(context) ?: run {
+    /** 执行一次加密备份（快照构建、gzip、加密、落盘全在 IO 线程）；成功返回 true */
+    suspend fun writeAutoBackup(context: Context): Boolean = withContext(Dispatchers.IO) {
+        val dir = backupDir(context)
+        if (dir == null) {
             Log.w(TAG, "外部目录不可用，跳过备份")
-            return false
+            return@withContext false
         }
         val encrypted = BackupCipher.encrypt(buildSnapshot(context).toByteArray(Charsets.UTF_8))
         if (encrypted == null) {
             Log.w(TAG, "加密失败，未写入备份")
-            return false
+            return@withContext false
         }
         val file = File(dir, newBackupName())
-        return runCatching { file.writeBytes(encrypted) }
+        runCatching { file.writeBytes(encrypted) }
             .onFailure { Log.w(TAG, "写入备份失败", it) }
             .onSuccess { prune(dir) }
             .isSuccess
@@ -117,12 +120,24 @@ object BackupManager {
     /** 最近一次备份时间（毫秒）；无备份返回 0 */
     fun latestBackupTime(context: Context): Long = latestBackup(context)?.lastModified() ?: 0L
 
-    /** 读取并解密指定备份；失败返回 null */
-    fun readSnapshot(context: Context, file: File): String? {
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
-        val plain = BackupCipher.decrypt(bytes) ?: return null
-        return String(plain, Charsets.UTF_8)
+    /** 读取并解密指定备份（旧版未压缩的备份同样可读）；失败返回 null */
+    suspend fun readSnapshot(context: Context, file: File): String? = withContext(Dispatchers.IO) {
+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@withContext null
+        decodeSnapshot(bytes)
     }
+
+    /**
+     * 备份字节 → 明文 JSON：是加密备份就解密，否则按 UTF-8 读。
+     *
+     * @return null 表示确认加密但解不开（换设备 / 密钥被清 / 损坏）。不能退化成按明文读，
+     *         那只会把密文解成乱码、最后报「无法识别」，把真实原因藏起来。
+     */
+    fun decodeSnapshot(bytes: ByteArray): String? =
+        if (BackupCipher.isEncrypted(bytes)) {
+            BackupCipher.decrypt(bytes)?.let { String(it, Charsets.UTF_8) }
+        } else {
+            String(bytes, Charsets.UTF_8)
+        }
 
     /** 备份总占用（字节） */
     fun totalSize(context: Context): Long = listBackups(context).sumOf { it.length() }

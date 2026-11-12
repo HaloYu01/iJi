@@ -1,9 +1,11 @@
 package com.iji.app.ai
 
 import android.graphics.Bitmap
+import com.iji.app.capture.ForegroundAppResolver
 import com.iji.app.data.model.Transaction
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
+import com.iji.app.data.repository.CategoryDefaults
 import java.time.LocalDate
 
 /**
@@ -137,10 +139,15 @@ object ScreenshotBillParser {
      * 整屏识别：OCR 行 → 多笔草稿。
      *
      * @param today 用于把 `10-14` 这类无年份日期补全为完整日期，并处理跨年
+     * @param sourcePkg 截图时的前台应用包名；能映射到账户时优先于 OCR 文本推断
      */
-    suspend fun recognizeDrafts(bmp: Bitmap, today: LocalDate = LocalDate.now()): List<BillDraft> {
+    suspend fun recognizeDrafts(
+        bmp: Bitmap,
+        today: LocalDate = LocalDate.now(),
+        sourcePkg: String? = null,
+    ): List<BillDraft> {
         val lines = LocalOcrEngine.recognizeLines(bmp).orEmpty()
-        return parse(lines, today)
+        return parse(lines, today, sourcePkg)
     }
 
     /**
@@ -160,10 +167,16 @@ object ScreenshotBillParser {
     }
 
     /** 纯函数版本（便于单测 / 直接喂 OCR 文本） */
-    fun parse(lines: List<String>, today: LocalDate = LocalDate.now()): List<BillDraft> {
+    fun parse(
+        lines: List<String>,
+        today: LocalDate = LocalDate.now(),
+        sourcePkg: String? = null,
+    ): List<BillDraft> {
         val out = mutableListOf<BillDraft>()
-        // 整屏文字里通常带 App 名，用它作为这批账单的默认账户
-        val detectedAccount = detectAccount(lines)
+        // 前台包名是硬证据（顶栏文字可能被 OCR 漏掉或误读），认不出再退回整屏文字推断
+        val detectedAccount = ForegroundAppResolver.accountFor(sourcePkg)
+            ?: detectAccount(lines).takeIf { it.isNotBlank() }
+            ?: ""
         var curDate: LocalDate? = null
         // 商户名与收支方向都可能落在金额**上一行**（微信/支付宝列表常见的两行式版式）
         var pendingMerchant = ""
@@ -387,4 +400,26 @@ fun markDuplicates(drafts: List<BillDraft>, existing: List<Transaction>): List<B
             draft
         }
     }
+}
+
+/**
+ * 视觉模型单笔结果 → 导入预览草稿。
+ * 分类名对不上用户真实分类表时落该类型的「其他」（[CategoryDefaults.fallbackId]），改分类在预览页做。
+ */
+fun AiBookkeepingService.BillResult.toImportDraft(today: LocalDate = LocalDate.now()): BillDraft {
+    val type = when (type) {
+        "income" -> TransactionType.INCOME
+        "transfer" -> TransactionType.TRANSFER
+        else -> TransactionType.EXPENSE
+    }
+    val catalog = if (type == TransactionType.INCOME) CategoryCatalog.incomes else CategoryCatalog.expenses
+    return BillDraft(
+        type = type,
+        categoryId = catalog.firstOrNull { it.name == categoryHint.trim() }?.id
+            ?: CategoryDefaults.fallbackId(type),
+        amountCents = amountCents,
+        note = note,
+        account = accountHint,
+        date = today,
+    )
 }

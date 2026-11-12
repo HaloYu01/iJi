@@ -74,6 +74,13 @@ object IjiButtonFx {
             sinkAmount = SinkAmount,
             sinkSpec = SinkSpec,
         )
+
+    /**
+     * 只有按压缩放、没有水波纹的反馈：给玻璃面板上的按钮（如弹窗底部操作行）用，
+     * 水波纹遮罩在玻璃底上观感发脏，这些场景只要下沉回弹。
+     */
+    val SinkOnlyIndication: IndicationNodeFactory
+        get() = SinkFeedback(sinkAmount = SinkAmount, animationSpec = SinkSpec)
 }
 
 /** 合并水波纹与按压缩放的 Indication（参数见 [IjiButtonFx]） */

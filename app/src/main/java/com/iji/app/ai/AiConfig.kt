@@ -17,7 +17,7 @@ object AiConfig {
     /** 总开关：关闭后所有解析只走本机规则 / 本地 OCR，不再联网 */
     private const val KEY_ENABLED = "ai_enabled"
 
-    /** 文本解析方式：local（默认，纯本机规则）/ ai（规则没命中时调大模型） */
+    /** 文本解析方式：local（默认，纯本机规则）/ ai（文本直接调大模型，失效降级本地） */
     private const val KEY_PARSE_MODE = "ai_parse_mode"
 
     /** AI 功能细分开关（对应 AutoAccounting「AI 功能」里的 aiVisionRecognition / aiCategoryRecognition） */
@@ -86,13 +86,18 @@ object AiConfig {
         SettingsRepository.setBoolean(context, KEY_ENABLED, enabled)
     }
 
-    /** 图片是否允许直发视觉模型（关闭 = 只用本地 OCR，图不出设备） */
+    /** 图片识别用 AI：关=纯本地 OCR；开=跳过 OCR 直发模型，失败回落本地。 */
     fun isVisionEnabled(context: Context): Boolean =
         SettingsRepository.getBoolean(context, KEY_VISION, true)
 
     fun setVisionEnabled(context: Context, enabled: Boolean) {
         SettingsRepository.setBoolean(context, KEY_VISION, enabled)
     }
+
+    /** 是否真的把图片发给模型：AI 可用且开关打开 */
+    fun visionUsesAi(aiReady: Boolean, visionEnabled: Boolean): Boolean = aiReady && visionEnabled
+
+    fun visionUsesAi(context: Context): Boolean = visionUsesAi(aiReady(context), isVisionEnabled(context))
 
     /** AI 是否参与分类（关闭 = 分类落「其他」，由用户在记账面板里自己选） */
     fun isCategoryEnabled(context: Context): Boolean =
@@ -116,7 +121,7 @@ object AiConfig {
         resolveMode(SettingsRepository.getString(context, KEY_PARSE_MODE, MODE_LOCAL), aiReady(context))
 
     /**
-     * 选择 + 可用性 → 实际生效的解析方式（纯函数，可单测）。
+     * 选择 + 可用性 → 实际生效的解析方式。
      *
      * 三条规则：
      * 1. **默认本地**：没选过（[chosen] 为 null/空/未知值）一律本地；
@@ -196,7 +201,7 @@ object AiConfig {
     fun isPromptCustom(context: Context, kind: AiPromptKind): Boolean =
         getPromptCustom(context, kind).isNotBlank()
 
-    /** 自定义为空 → 默认（纯函数，可单测） */
+    /** 自定义为空 → 默认 */
     fun resolvePrompt(custom: String, default: String): String = custom.ifBlank { default }
 
     /** 实际发给模型的提示词 */

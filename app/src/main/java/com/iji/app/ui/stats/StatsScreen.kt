@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -78,6 +77,7 @@ import com.iji.app.MonthStat
 import com.iji.app.data.model.CurrencyDisplay
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.ContentState
+import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiTopBar
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.IjiTextAction
@@ -86,9 +86,12 @@ import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiIconFocusRing
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.ijiTopBarRecordHeight
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.iji.app.ui.components.topbar.topBarContentInset
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.ExpenseAmount
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IjiTheme
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.MiuixPrimary
@@ -114,6 +117,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 图例最多展示的分类数，其余合并为「其他 N 类」 */
 private const val LEGEND_TOP = 4
@@ -135,9 +139,7 @@ fun StatsScreen(
     onNavigateMine: () -> Unit = {},
     /** 下钻：分类 + 当期区间 → 该分类的账单列表 */
     onNavigateCategory: (categoryId: String, start: LocalDate, end: LocalDate) -> Unit = { _, _, _ -> },
-    /** 空态的「去记一笔」，由 AppRoot 打开记账面板 */
-    onAddBill: () -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
     viewModel: StatsViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -163,7 +165,8 @@ fun StatsScreen(
     val topBarSurface = MaterialTheme.colorScheme.background
     val topBarBackdrop = rememberLayerBackdrop { drawRect(topBarSurface); drawContent() }
     // 顶栏采样层节流：滚动中才重录，静止不录、不重跑顶栏模糊 shader
-    val topBarMustRecord = remember(listState) { { listState.isScrollInProgress } }
+    val topBarRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val topBarMustRecord = remember(listState) { { topBarRecordGate.shouldRecord(listState.isScrollInProgress) } }
     val listScrolled by remember {
         derivedStateOf {
             listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
@@ -205,7 +208,7 @@ fun StatsScreen(
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .then(
                     if (listScrolled) {
-                        Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord)
+                        Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord, recordHeight = ijiTopBarRecordHeight())
                     } else {
                         Modifier
                     },
@@ -255,16 +258,16 @@ fun StatsScreen(
                         verticalAlignment = Alignment.Top,
                     ) {
                         Box(Modifier.weight(1f)) {
-                            OverviewCard(period, onAddBill) { showAiSummary = true }
+                            OverviewCard(period) { showAiSummary = true }
                         }
                         Box(Modifier.weight(1f)) {
-                            CategoryCardBlock(period, onNavigateCategory, onAddBill)
+                            CategoryCardBlock(period, onNavigateCategory)
                         }
                     }
                 }
             } else {
-                item { OverviewCard(period, onAddBill) { showAiSummary = true } }
-                item { CategoryCardBlock(period, onNavigateCategory, onAddBill) }
+                item { OverviewCard(period) { showAiSummary = true } }
+                item { CategoryCardBlock(period, onNavigateCategory) }
             }
             item { TrendCard(viewModel, trend) }
         }
@@ -277,11 +280,22 @@ fun StatsScreen(
         )
     }
 
+    // AI 小结的预算参照：monthBudgetProgress 永远指向**当前自然月**的总预算，
+    // 只有「月维度 + 浏览的就是这个月」时口径才对得上；浏览历史月份或周 / 年维度不带。
+    val budgetProgress by app.monthBudgetProgress.collectAsStateWithLifecycle()
+    val summaryBudget = if (dimension == StatsDimension.MONTH && month == YearMonth.now()) {
+        budgetProgress?.let { it.amountCents to it.spentCents }
+    } else {
+        null
+    }
+
     AiSummaryDialog(
         show = showAiSummary,
         dimensionLabel = dimension.label,
         periodTitle = periodTitle,
         period = period,
+        budgetCents = summaryBudget?.first,
+        budgetSpentCents = summaryBudget?.second,
         onDismiss = { showAiSummary = false },
     )
 }
@@ -369,21 +383,13 @@ private fun DimensionSelector(
     onSelect: (StatsDimension) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(Radius.xxl))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            .padding(2.dp),
-    ) {
-        StatsDimension.entries.forEach { option ->
-            SegmentItem(
-                label = option.label,
-                selected = option == dimension,
-                onClick = { onSelect(option) },
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
+    IjiSegmentedRow(
+        options = StatsDimension.entries.toList(),
+        selected = dimension,
+        onSelect = onSelect,
+        modifier = modifier,
+        label = { it.label },
+    )
 }
 
 /** 常驻占位（不可用时置灰），避免出现/消失导致控制条跳动 */
@@ -399,38 +405,13 @@ private fun BackToNowText(isCurrentPeriod: Boolean, onClick: () -> Unit) {
     )
 }
 
-@Composable
-private fun SegmentItem(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .heightIn(min = 40.dp)
-            .clip(RoundedCornerShape(Radius.xxl))
-            .background(if (selected) MiuixPrimary else Color.Transparent)
-            // 已选中不再响应点击：省掉一次无意义的同值写入
-            .clickable(enabled = !selected, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (selected) Color.White else TextSecondary,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        )
-    }
-}
-
 /**
  * 收支概览：支出为主指标（最大字号）+ 环比，收入 / 结余为次级，底部 100% 堆叠对比条。
  *
  * 结余不再靠「绿 / 蓝」切换暗示正负（蓝在本页已代表支出），改用中性色 + 「结余 / 超支」文案。
  */
 @Composable
-private fun OverviewCard(period: PeriodStats, onAddBill: () -> Unit, onAiSummary: () -> Unit) {
+private fun OverviewCard(period: PeriodStats, onAiSummary: () -> Unit) {
     val balance = period.incomeCents - period.expenseCents
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -475,7 +456,8 @@ private fun OverviewCard(period: PeriodStats, onAddBill: () -> Unit, onAiSummary
                             formatMoney(value),
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
-                            color = MiuixPrimary,
+                            // 全局约定：消费红色
+                            color = ExpenseAmount,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -498,26 +480,8 @@ private fun OverviewCard(period: PeriodStats, onAddBill: () -> Unit, onAiSummary
                     modifier = Modifier.weight(1f),
                 )
             }
-            Spacer(Modifier.height(16.dp))
-            if (period.billCount == 0) {
-                // 本期完全没记账：比例条只会显示「支出 — / 收入 —」，不如直接给出口
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        "本期还没有收支记录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    IjiTextAction(
-                        text = "去记一笔",
-                        onClick = onAddBill,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            } else {
+            if (period.billCount > 0) {
+                Spacer(Modifier.height(16.dp))
                 RatioBar(expenseCents = period.expenseCents, incomeCents = period.incomeCents)
             }
             if (period.expenseCount > 0) {
@@ -714,7 +678,6 @@ private fun RatioBar(expenseCents: Long, incomeCents: Long) {
 private fun CategoryCardBlock(
     period: PeriodStats,
     onNavigateCategory: (String, LocalDate, LocalDate) -> Unit,
-    onAddBill: () -> Unit,
 ) {
     CategoryCard(
         byCategory = period.byCategory,
@@ -725,7 +688,6 @@ private fun CategoryCardBlock(
             // 区间可能尚未就绪（首帧），此时不响应下钻
             period.range?.let { onNavigateCategory(categoryId, it.start, it.end) }
         },
-        onAddBill = onAddBill,
     )
 }
 
@@ -742,7 +704,6 @@ private fun CategoryCard(
     categoryTotalCents: Long,
     netExpenseCents: Long,
     onSelectCategory: (String) -> Unit,
-    onAddBill: () -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     // 环形/图例共用的选中态：点扇区或点图例都走这里，两处高亮天然同步
@@ -794,17 +755,7 @@ private fun CategoryCard(
             }
             Spacer(Modifier.height(14.dp))
             if (stats.isEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    StateView(state = ContentState.Empty("本期暂无支出"))
-                    IjiTextAction(
-                        text = "去记一笔",
-                        onClick = onAddBill,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
+                StateView(state = ContentState.Empty("本期暂无支出"))
             } else {
                 Row(
                     modifier = Modifier
@@ -1049,6 +1000,8 @@ private fun DonutChart(
                     formatMoney(totalExpenseCents),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                    // 全局约定：消费红色
+                    color = ExpenseAmount,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1084,7 +1037,7 @@ private fun CategoryDetailList(stats: List<CategoryStat>, onSelectCategory: (Str
                 CategoryIconImage(
                     name = category.name,
                     color = tint,
-                    size = 30.dp,
+                    size = IjiIconSize.ChartRow,
                     categoryId = category.id,
                 )
                 Spacer(Modifier.width(10.dp))
@@ -1153,20 +1106,14 @@ private fun TrendCard(viewModel: StatsViewModel, trend: List<MonthStat>) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("范围", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 Spacer(Modifier.width(8.dp))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(Radius.xxl))
-                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        .padding(2.dp),
-                ) {
-                    TrendRange.entries.forEach { option ->
-                        TrendRangeItem(
-                            label = option.label,
-                            selected = option == range,
-                            onClick = { viewModel.setTrendRange(option) },
-                        )
-                    }
-                }
+                IjiSegmentedRow(
+                    options = TrendRange.entries.toList(),
+                    selected = range,
+                    onSelect = { viewModel.setTrendRange(it) },
+                    modifier = Modifier.weight(1f),
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    label = { it.label },
+                )
             }
             Spacer(Modifier.height(12.dp))
             // 实线 / 虚线是颜色之外的第二编码：色盲用户也能区分两条线
@@ -1198,7 +1145,8 @@ private fun TrendCard(viewModel: StatsViewModel, trend: List<MonthStat>) {
                     Text(
                         "支出 ${formatMoney(focused.expenseCents)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MiuixPrimary,
+                        // 全局约定：消费红色
+                        color = ExpenseAmount,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
@@ -1266,26 +1214,6 @@ private fun TrendCard(viewModel: StatsViewModel, trend: List<MonthStat>) {
     }
 }
 
-@Composable
-private fun TrendRangeItem(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .heightIn(min = 36.dp)
-            .clip(RoundedCornerShape(Radius.xxl))
-            .background(if (selected) MiuixPrimary else Color.Transparent)
-            .clickable(enabled = !selected, onClick = onClick)
-            .padding(horizontal = 9.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (selected) Color.White else TextSecondary,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        )
-    }
-}
-
 /** 图例线段：实线=支出、虚线=收入（颜色之外的第二编码） */
 @Composable
 private fun LegendLine(color: Color, dashed: Boolean) {
@@ -1332,7 +1260,8 @@ private fun TrendDataTable(trend: List<MonthStat>) {
                 Text(
                     formatMoney(stat.expenseCents),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MiuixPrimary,
+                    // 全局约定：消费红色
+                    color = ExpenseAmount,
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.End,
                 )

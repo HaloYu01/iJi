@@ -24,13 +24,21 @@ data class LocalRule(
     val category: String = "其他",
     /** 命中后预填的账户名；留空 = 不预填 */
     val account: String = "",
-    /** 关键词：命中**任意一个**即算匹配（不区分大小写） */
+    /** 关键词：命中**任意一个**即算匹配（不区分大小写；[regex] 为 true 时按正则解释） */
     val keywords: List<String> = emptyList(),
     val enabled: Boolean = true,
     /** 内置规则：可删可改，但「恢复内置规则」能再补回来 */
     val builtin: Boolean = false,
+    /** 金额下限（元）；null = 不限。命中还要求解析出的金额落在范围内 */
+    val moneyMin: Double? = null,
+    /** 金额上限（元）；null = 不限 */
+    val moneyMax: Double? = null,
+    /** 正则模式：keywords 每条按正则解释（坏的正则跳过，不抛异常） */
+    val regex: Boolean = false,
+    /** 自动记忆规则：「AI 记账」结果卡勾选「记住分类」生成；同关键词自动去重覆盖 */
+    val auto: Boolean = false,
 ) {
-    /** 列表里的一句话状态：`8 词 → 餐饮`；收入/不限类型才标注，配了账户才追加「预填」 */
+    /** 列表里的一句话状态：`8 词 · 金额 10-100 → 餐饮`；类型/正则/账户有配置才标注 */
     fun summary(): String {
         val count = if (keywords.isEmpty()) "未设关键词" else "${keywords.size} 词"
         val typeMark = when (type) {
@@ -38,8 +46,40 @@ data class LocalRule(
             TYPE_ANY -> " · 不限"
             else -> ""
         }
+        val amountMark = amountRangeText()?.let { " · 金额 $it" }.orEmpty()
+        val regexMark = if (regex) " · 正则" else ""
         val accountText = if (account.isBlank()) "" else " · 预填$account"
-        return "$count$typeMark → $category$accountText"
+        return "$count$typeMark$amountMark$regexMark → $category$accountText"
+    }
+
+    /** 金额范围的一句话描述（如 `10-100` / `≥50`）；未设返回 null */
+    fun amountRangeText(): String? = when {
+        moneyMin == null && moneyMax == null -> null
+        moneyMin == null -> "≤${amountText(moneyMax!!)}"
+        moneyMax == null -> "≥${amountText(moneyMin)}"
+        else -> "${amountText(moneyMin)}-${amountText(moneyMax)}"
+    }
+
+    /** 金额条件是否满足：未设金额条件恒真；设了条件但没有金额可对（[amountYuan] 为 null）则不命中 */
+    fun matchesAmount(amountYuan: Double?): Boolean {
+        if (moneyMin == null && moneyMax == null) return true
+        if (amountYuan == null) return false
+        if (moneyMin != null && amountYuan < moneyMin) return false
+        if (moneyMax != null && amountYuan > moneyMax) return false
+        return true
+    }
+
+    /** 本规则的命中词列表：普通模式查包含；正则模式逐条 [Regex] 匹配，坏的正则跳过 */
+    fun hitKeywords(text: String): List<String> {
+        val words = keywords.map { it.trim() }.filter { it.isNotEmpty() }
+        if (regex) {
+            return words.filter { kw ->
+                runCatching { Regex(kw, RegexOption.IGNORE_CASE).containsMatchIn(text) }
+                    .getOrDefault(false)
+            }
+        }
+        val lower = text.lowercase(Locale.ROOT)
+        return words.filter { lower.contains(it.lowercase(Locale.ROOT)) }
     }
 
     companion object {
@@ -52,6 +92,10 @@ data class LocalRule(
             TYPE_ANY -> "不限"
             else -> "支出"
         }
+
+        /** 金额显示：整数值去掉小数尾巴（10.0 → 10，10.5 → 10.5） */
+        fun amountText(value: Double): String =
+            if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
     }
 }
 
@@ -63,7 +107,7 @@ data class LocalRuleMatch(
 )
 
 /**
- * 本地规则引擎（纯函数，可单测）。
+ * 本地规则引擎。
  *
  * 输入是**一条待识别的文本**（用户输入 / 通知原文 / 小票 OCR 出的整段文字），
  * 输出命中的规则；金额不在这里解析——金额有独立的「元 / 块 / ¥」解析器，
@@ -87,25 +131,27 @@ object LocalRuleEngine {
     /**
      * 在 [rules] 里找最匹配的一条；没有命中返回 null。
      *
-     * 先按收支过滤（[LocalRule.TYPE_ANY] 永远参与），再按命中强度排序：
+     * 先按收支与金额过滤（[LocalRule.TYPE_ANY] 永远参与；设了金额条件的规则要求
+     * [amountYuan] 非空且在范围内），再按命中强度排序：
      * 命中词数 > 最长命中词长度 > 用户规则优先 > 配置顺序。
      * 「最长命中词」是区分「药」（医疗）与「药店会员卡充值」这类长词的精度的关键。
+     *
+     * @param amountYuan 从文本解析出的金额（元）；null = 没解析出金额（金额条件不参与也不拦），
+     *   语义见 [LocalRule.matchesAmount]
      */
-    fun match(text: String, rules: List<LocalRule>): LocalRuleMatch? {
+    fun match(text: String, rules: List<LocalRule>, amountYuan: Double? = null): LocalRuleMatch? {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
-        val lower = trimmed.lowercase(Locale.ROOT)
         val wanted = detectType(trimmed)
 
         return rules.asSequence()
             .filter { it.enabled && it.keywords.isNotEmpty() }
             .filter { it.type == LocalRule.TYPE_ANY || it.type == wanted }
+            .filter { it.matchesAmount(amountYuan) }
             .mapNotNull { rule ->
-                val hitKeywords = rule.keywords
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() && lower.contains(it.lowercase(Locale.ROOT)) }
-                if (hitKeywords.isEmpty()) null
-                else Triple(rule, hitKeywords.size, hitKeywords.maxOf { it.length })
+                val hits = rule.hitKeywords(trimmed)
+                if (hits.isEmpty()) null
+                else Triple(rule, hits.size, hits.maxOf { it.length })
             }
             .sortedWith(
                 compareByDescending<Triple<LocalRule, Int, Int>> { it.second }

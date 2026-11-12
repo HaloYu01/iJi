@@ -10,17 +10,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.navigationevent.compose.rememberNavigationEventDispatcherOwner
+import com.iji.app.ai.TempImages
 import com.iji.app.budget.NotificationHelper
 import com.iji.app.ui.IjiApp
 import com.iji.app.ui.NavIntentHolder
+import com.iji.app.ui.Routes
+import com.iji.app.ui.SharedReceiptHolder
 import com.iji.app.ui.theme.IjiTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -41,13 +48,23 @@ class MainActivity : ComponentActivity() {
         // App 已在前台时通知点击走这里（singleTask，Activity 不重建），把路由转给 Compose 侧导航
         NavIntentHolder.post(intent.getStringExtra(NotificationHelper.EXTRA_NAV_ROUTE))
         handleOpenAddBill(intent)
+        handleSharedImage(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 提前创建 Activity 级共享 ViewModel：它持有首屏 Room 订阅。若等到 Compose
+        // 首帧才创建，查询会排在窗口创建 / JIT / 首帧组合之后，账单白等近一秒。
+        // owner 与 sharedMainViewModel() 一致，取到的是同一个实例。
+        ViewModelProvider(this).get(MainViewModel::class.java)
         // 冷启动即由通知唤起：把通知携带的目标路由交给 Compose 侧导航
         NavIntentHolder.post(intent.getStringExtra(NotificationHelper.EXTRA_NAV_ROUTE))
         handleOpenAddBill(intent)
+        handleSharedImage(intent)
+        // 上次没走完的分享截图（进程被杀 / 用户没进智能识别页）：缓存里的账单图不留过夜
+        lifecycleScope.launch(Dispatchers.IO) {
+            TempImages.sweep(cacheDir, prefix = "shared_receipt_")
+        }
         enableEdgeToEdge()
         // 刘海屏 / 挖孔屏：允许内容绘制到短边 cutout 区域，否则顶部会留出一条黑边。
         // 「避开挖孔」由 Compose 侧用 displayCutout inset 处理（见 IjiTopBar 的安全区计算）。
@@ -60,6 +77,9 @@ class MainActivity : ComponentActivity() {
         // 初始化主题状态（统一走 SettingsRepository / DataStore，保留既有值）
         com.iji.app.ui.theme.ThemeState.themeMode =
             com.iji.app.data.repository.SettingsRepository.getString(this, "theme_mode", "system")
+        // 个人资料（头像 / 昵称）也要冷启动即读：顶栏「我的」入口在首页直接显示头像，
+        // 不能等用户进过「我的」页（MineScreen 才 ensureInit）才生效
+        com.iji.app.ui.mine.ProfileState.ensureInit(this)
 
         setContent {
             // Miuix 弹层（OverlayDialog / OverlayBottomSheet）内部 NavigationBackHandler 需要
@@ -75,7 +95,9 @@ class MainActivity : ComponentActivity() {
             CompositionLocalProvider(LocalNavigationEventDispatcherOwner provides navigationEventOwner) {
                 IjiTheme {
                     val view = LocalView.current
-                    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+                    // 必须跟随 App 内选择的主题（ThemeState），不能只看系统深色：
+                    // 系统浅色 + App 手动深色时，状态栏图标会留在深色底上不可见。
+                    val isDark = com.iji.app.ui.util.isAppDarkTheme()
                     val statusBarColor = MiuixTheme.colorScheme.surface
                     val navigationBarColor = MiuixTheme.colorScheme.surface
 
@@ -111,6 +133,29 @@ class MainActivity : ComponentActivity() {
         if (com.iji.app.ui.PendingBillHolder.pending.value == null) {
             com.iji.app.accessibility.PaymentBillStore.consume(this)?.let {
                 com.iji.app.ui.PendingBillHolder.post(it)
+            }
+        }
+    }
+
+    /** 系统分享图片：复制到自己 cache 后把路径交给「智能识别」页，识别完仍要用户确认 */
+    private fun handleSharedImage(intent: android.content.Intent) {
+        if (intent.action != android.content.Intent.ACTION_SEND) return
+        val uri = intent.getParcelableExtra<android.net.Uri>(
+            android.content.Intent.EXTRA_STREAM,
+        ) ?: return
+        lifecycleScope.launch {
+            val path = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = java.io.File(cacheDir, "shared_receipt_${System.currentTimeMillis()}.jpg")
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { output -> input.copyTo(output) }
+                    } ?: return@runCatching null
+                    file.absolutePath
+                }.getOrNull()
+            }
+            if (path != null) {
+                NavIntentHolder.post(Routes.SMART_CAPTURE)
+                SharedReceiptHolder.post(path)
             }
         }
     }

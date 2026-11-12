@@ -2,6 +2,7 @@ package com.iji.app.ai
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,5 +65,38 @@ class AiParseModeTest {
     fun useAiFor_trueCannotBypassLocalMode() {
         // useAi = true 只是"想用"，配置说本地就得本地 —— 否则任一页面写死 true 就能偷偷上云
         assertFalse(AiBookkeepingService.useAiFor(true, AiConfig.MODE_LOCAL, aiReady = true))
+    }
+
+    // ---- AiBookkeepingService.preferTextResult：开 = AI 优先，失效一律降级本地 ----
+
+    private fun result(amount: Long, source: String) = AiBookkeepingService.BillResult(
+        type = "expense",
+        categoryHint = "其他",
+        amountCents = amount,
+        note = "",
+        accountHint = "",
+        tags = emptyList(),
+        source = source,
+    )
+
+    @Test
+    fun preferTextResult_usesAiWhenItHasAmount() {
+        val ai = result(3500, AiBookkeepingService.SOURCE_AI)
+        val local = result(1200, AiBookkeepingService.SOURCE_LOCAL_RULE)
+        assertEquals(ai, AiBookkeepingService.preferTextResult(ai, local))
+    }
+
+    @Test
+    fun preferTextResult_fallsBackToLocalWhenAiFails() {
+        val local = result(1200, AiBookkeepingService.SOURCE_LOCAL_RULE)
+        // 没开 AI / 请求失败返回 null
+        assertEquals(local, AiBookkeepingService.preferTextResult(null, local))
+        // AI 返回了结果但没识别出金额，同样算失效
+        assertEquals(
+            local,
+            AiBookkeepingService.preferTextResult(result(0, AiBookkeepingService.SOURCE_AI), local),
+        )
+        // 两边都没结果时不伪造结果
+        assertNull(AiBookkeepingService.preferTextResult(null, null))
     }
 }

@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import com.iji.app.MainActivity
 import com.iji.app.R
 import com.iji.app.budget.NotificationHelper
+import com.iji.app.capture.ForegroundAppResolver
 import com.iji.app.data.repository.SettingsRepository
 import com.iji.app.ui.PendingBillHolder
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -58,9 +59,21 @@ class PaymentNotifyAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        // 窗口切换只用来记住「当前前台是哪个 App」，供识屏判断账单来源；
+        // 只读事件自带的包名，不遍历控件树、不解析界面文字，系统窗口/桌面/本 App 一律跳过。
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString()
+            if (ForegroundAppResolver.isBillAppCandidate(pkg, packageName)) {
+                lastForegroundPkg = pkg
+            }
+            return
+        }
         // 只监听「通知状态变化」：现代 SDK（API 35+）已不再有 TYPE_NOTIFICATION_TEXT_CHANGED，
         // 通知文本统一由该事件携带；getText() 也已上移到父类 AccessibilityRecord（继承调用仍可用）。
-        if (event?.eventType != AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) return
+        if (event.eventType != AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) return
+        // 应用内逻辑总闸：关掉后不再发「待记账」提示，但不影响窗口切换记录（识屏来源判断要用）
+        if (!AutoBookkeepingPrefs.masterEnabled(this)) return
         val sourcePkg = event.packageName?.toString() ?: return
         // 忽略自己发出的通知，否则会因自己发的「记账提醒」再次触发，形成自激
         if (sourcePkg == packageName) return
@@ -224,8 +237,18 @@ class PaymentNotifyAccessibilityService : AccessibilityService() {
         @Volatile
         private var current: PaymentNotifyAccessibilityService? = null
 
+        /** 最近一次窗口切换事件里的前台包名（系统窗口 / 桌面 / 本 App 已在写入时过滤） */
+        @Volatile
+        private var lastForegroundPkg: String? = null
+
         /** 无障碍服务是否已连接（连接了才具备截屏能力；未开启时不要假装能截屏） */
         fun isConnected(): Boolean = current != null
+
+        /**
+         * 给识屏用的前台包名兜底来源。服务断开后返回 null，
+         * 避免拿一份不知道是多久以前的缓存去标注账单来源。
+         */
+        fun foregroundPackage(): String? = if (isConnected()) lastForegroundPkg else null
 
         /**
          * 截取当前屏幕。

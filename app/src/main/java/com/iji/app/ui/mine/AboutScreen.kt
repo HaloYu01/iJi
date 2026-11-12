@@ -1,4 +1,6 @@
 package com.iji.app.ui.mine
+
+import com.iji.app.update.UpdateFlow
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import top.yukonga.miuix.kmp.basic.SnackbarDuration
@@ -54,8 +56,6 @@ import androidx.core.graphics.createBitmap
 import com.iji.app.ui.components.topbar.topBarContentInset
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.iji.app.ui.effects.background.GlowBackground
-import com.iji.app.data.repository.SettingsRepository
-import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.IjiTopBarHeight
 import com.iji.app.ui.components.IjiTopBar
 import com.iji.app.ui.components.ijiTopBarContentPadding
@@ -67,11 +67,7 @@ import com.iji.app.ui.theme.AppleOrange
 import com.iji.app.ui.theme.ApplePurple
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.TextSecondary
-import com.iji.app.update.UpdateChecker
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
@@ -95,9 +91,6 @@ private const val HEADER_FADE_DISTANCE = 300f
  * 平板 / 桌面窗口里内容保持单列阅读宽度并居中，不被拉成超长行。
  */
 private val CONTENT_MAX_WIDTH = 720.dp
-
-/** 「检查更新」弹窗里更新说明最多展示这么多字符（远端返回的可能是整篇发布日志） */
-private const val NOTES_MAX_CHARS = 400
 
 /** 崩溃日志管理 */
 object CrashLogger {
@@ -303,10 +296,8 @@ fun AboutScreen(
             ?: context.applicationInfo?.nonLocalizedLabel?.toString()
             ?: "i记"
     }
-    // 版本号 / 构建号 / 发布日期：前两者来自安装包，日期来自更新日志里同版本那条，
-    // 页面不再自己写死任何版本常量（改版本只改 build.gradle.kts 与更新日志）。
-    val versionInfo = remember { currentVersionInfo(context) }
-    val appVersion = versionInfo.versionName
+    // 版本号取自安装包，页面不写死任何版本常量（改版本只改 build.gradle.kts）。
+    val appVersion = remember { currentVersionInfo(context).versionName }
     val appIcon = remember {
         val drawable = try {
             context.packageManager.getApplicationIcon(context.packageName)
@@ -345,34 +336,12 @@ fun AboutScreen(
     // 不依赖动画帧也能及时刷新 alpha（避免动画暂停时 alpha 滞后造成闪跳）
     val haloAlpha = 1f - headerProgress
 
-    // ── 检查更新 ──
-    // 本 App 没有内置更新服务器：更新源地址留空就如实说明「未配置」，填了才真的联网比对版本。
-    var showUpdateDialog by remember { mutableStateOf(false) }
-    var updateFeedUrl by remember { mutableStateOf("") }
-    var updateChecking by remember { mutableStateOf(false) }
-    var updateResult by remember { mutableStateOf<UpdateChecker.CheckResult?>(null) }
-    val updateScope = rememberCoroutineScope()
-
-    fun runUpdateCheck() {
-        updateChecking = true
-        updateResult = null
-        updateScope.launch {
-            updateResult = UpdateChecker.check(updateFeedUrl, appVersion)
-            updateChecking = false
-        }
-    }
-
-    LaunchedEffect(showUpdateDialog) {
-        if (showUpdateDialog) {
-            // DataStore 读取放到 IO 线程（不在组合期阻塞主线程）
-            updateFeedUrl = withContext(Dispatchers.IO) {
-                SettingsRepository.getString(context, SettingsRepository.KEY_UPDATE_FEED_URL)
-            }
-            updateResult = null
-            // 已配置更新源才自动发起检查；没配置就什么都不发
-            if (updateFeedUrl.isNotBlank()) runUpdateCheck()
-        }
-    }
+    // 光晕可见时卡片留出一点透明度，让背景光效透出来，避免实色块把光晕切成生硬的边。
+    // 用两档而非随滚动连续插值：滚动中卡片颜色稳定，避免每帧重组整页卡片；
+    // 光晕几乎淡尽时再切回实色，此刻视觉上无跳变，正文对比度也恢复。
+    val cardColor = MaterialTheme.colorScheme.surface.copy(
+        alpha = if (haloAlpha > 0.02f) 0.76f else 1f,
+    )
 
     Scaffold(
         topBar = {
@@ -430,52 +399,27 @@ fun AboutScreen(
                     // 分组之间统一用主题卡间距：之前没有 verticalArrangement，卡片是紧贴的
                     verticalArrangement = Arrangement.spacedBy(LocalDimens.current.cardGap),
                 ) {
-                    // ── 1. 身份区：图标 / 名称 / 版本 / 一句话定位 ──
+                    // ── 1. 身份区：图标 / 名称 / 版本号 ──
                     item(key = "hero") {
                         AboutHero(
                             appIcon = appIcon,
                             appName = appName,
                             version = appVersion,
-                            buildNumber = versionInfo.versionCode,
-                            releaseDate = versionInfo.releaseDate,
                             progress = headerProgress,
                         )
                     }
 
-                    // ── 2. 简介卡：紧贴身份区，回答「这是什么应用」──
-                    item(key = "intro") {
-                        AboutCard(
-                            modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
-                        ) {
-                            Column(modifier = Modifier.padding(20.dp)) {
-                                Text(
-                                    text = "$appName 是一款纯本地记账应用：记一笔、资产账户、预算与图表统计" +
-                                        "都在本机完成，数据默认只保存在本机，备份由你主动发起。",
-                                    fontSize = 14.sp,
-                                    lineHeight = 21.sp,
-                                    color = TextSecondary,
-                                )
-                                Spacer(Modifier.height(18.dp))
-                                Row(modifier = Modifier.fillMaxWidth()) {
-                                    AboutFeature("纯本地", "数据留在本机", Modifier.weight(1f))
-                                    AboutFeature("多账本", "账本独立管理", Modifier.weight(1f))
-                                    AboutFeature("图表统计", "趋势与分类占比", Modifier.weight(1f))
-                                }
-                            }
-                        }
-                    }
-
-                    // ── 3. 更新：版本状态与检查动作放同一组 ──
+                    // ── 2. 更新：版本状态与检查动作放同一组 ──
                     // 原来 5 行塞在一张「应用支持」里，把「看版本」和「看条款」两类事混在一起。
                     item(key = "updates") {
                         AboutSection(title = "版本与更新") {
-                            AboutCard {
+                            AboutCard(containerColor = cardColor) {
                                 AboutEntryRow(
                                     icon = MiuixIcons.Notes,
                                     accent = MiuixPrimary,
                                     title = "更新日志",
                                     // version 本身已带 v 前缀，直接拼会变成「vv1.0.0」
-                                    endText = changelogData.firstOrNull()?.let { "${it.version} · ${it.date}" },
+                                    endText = changelogData.firstOrNull()?.version,
                                     onClick = onNavigateChangelog,
                                 )
                                 AboutDivider()
@@ -483,16 +427,16 @@ fun AboutScreen(
                                     icon = MiuixIcons.Update,
                                     accent = AppleIndigo,
                                     title = "检查更新",
-                                    onClick = { showUpdateDialog = true },
+                                    onClick = { UpdateFlow.openManual(context) },
                                 )
                             }
                         }
                     }
 
-                    // ── 4. 支持与信息：反馈入口 + 条款类页面 ──
+                    // ── 3. 支持与信息：反馈入口 + 条款类页面 ──
                     item(key = "support") {
                         AboutSection(title = "支持与信息") {
-                            AboutCard {
+                            AboutCard(containerColor = cardColor) {
                                 AboutEntryRow(
                                     icon = MiuixIcons.Email,
                                     accent = AppleOrange,
@@ -500,7 +444,7 @@ fun AboutScreen(
                                     endText = "邮件",
                                     onClick = {
                                         val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                            data = android.net.Uri.parse("mailto:feedback@iji.app")
+                                            data = android.net.Uri.parse("mailto:$contactEmail")
                                             putExtra(Intent.EXTRA_SUBJECT, "$appName - 问题反馈")
                                         }
                                         runCatching {
@@ -522,17 +466,17 @@ fun AboutScreen(
                                     icon = MiuixIcons.File,
                                     accent = ApplePurple,
                                     title = "许可与授权",
-                                    endText = "本应用条款 · 开源组件",
                                     onClick = onNavigateLicense,
                                 )
                             }
                         }
                     }
 
-                    // ── 5. 特别致谢（折叠，收起时显示条目数）──
+                    // ── 4. 特别致谢（折叠，收起时显示条目数）──
                     item(key = "thanks") {
                         var expanded by remember { mutableStateOf(false) }
                         AboutCollapsibleCard(
+                            containerColor = cardColor,
                             modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                             title = "特别致谢",
                             endText = "${thanksData.size} 个项目",
@@ -540,27 +484,26 @@ fun AboutScreen(
                             onToggle = { expanded = !expanded },
                         ) {
                             Text(
-                                // 不再把项目硬分成「UI 框架 / 核心组件」：NexioSchedule、Tally 是
-                                // 交互与代码参考，按数据原顺序列出更准确，也不会漏掉作者。
-                                text = "以下项目在界面、交互与实现方式上为本应用提供了帮助。" +
-                                    "纯依赖库的许可声明在「许可与授权」页单独列出，这里只写借鉴了什么。",
+                                // 按数据原顺序列出更准确，也不会漏掉作者。
+                                text = "以下项目为本应用提供了参考，点击名称可访问仓库；" +
+                                    "依赖库许可见「许可与授权」页。",
                                 fontSize = 13.sp,
                                 lineHeight = 19.sp,
                                 color = TextSecondary,
                             )
-                            Spacer(Modifier.height(6.dp))
-                            thanksData.forEachIndexed { index, item ->
+                            Spacer(Modifier.height(4.dp))
+                            thanksData.forEach { item ->
                                 ThanksItem(item = item, uriHandler = uriHandler)
-                                if (index < thanksData.lastIndex) AboutDivider(startPadding = 0.dp)
                             }
                         }
                     }
 
-                    // ── 6. 运行诊断：崩溃日志（折叠；没有日志时不渲染按钮）──
+                    // ── 5. 运行诊断：崩溃日志（折叠；没有日志时不渲染按钮）──
                     item(key = "crash") {
                         var expanded by remember { mutableStateOf(false) }
                         val logs = remember { CrashLogger.getCrashLogs(context) }
                         AboutCollapsibleCard(
+                            containerColor = cardColor,
                             modifier = Modifier.padding(horizontal = LocalDimens.current.screenPadding),
                             title = "崩溃日志",
                             endText = if (logs.isBlank()) "无记录" else "有记录",
@@ -605,11 +548,11 @@ fun AboutScreen(
                         }
                     }
 
-                    // ── 7. 页脚 ──
+                    // ── 6. 页脚 ──
                     // 一行灰字即可；作者名不给主色（同色但不可点，容易被误认成失效链接）。
                     item(key = "footer") {
                         Text(
-                            text = "© 2026 $appName · 设计与开发 DHY",
+                            text = "© 2026 $appName · 设计与开发 HaloYu",
                             fontSize = 12.sp,
                             color = TextSecondary,
                             textAlign = TextAlign.Center,
@@ -626,112 +569,7 @@ fun AboutScreen(
         }
     }
 
-    // 检查更新弹窗：原来点「更新版本」只弹一句写死的「已是最新版本」——
-    // 没有任何网络校验，等于骗用户。现在要么真的查（配置了更新源），要么如实说没接入。
-    IjiDialog(
-        show = showUpdateDialog,
-        onDismissRequest = { showUpdateDialog = false },
-        title = "检查更新",
-        confirmText = if (updateChecking) "检查中…" else "保存并检查",
-        confirmEnabled = !updateChecking,
-        onConfirm = {
-            SettingsRepository.setString(
-                context,
-                SettingsRepository.KEY_UPDATE_FEED_URL,
-                updateFeedUrl.trim(),
-            )
-            runUpdateCheck()
-        },
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 340.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Text(
-                "当前版本 v$appVersion",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            Spacer(Modifier.height(10.dp))
-            top.yukonga.miuix.kmp.basic.TextField(
-                value = updateFeedUrl,
-                onValueChange = { updateFeedUrl = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = "更新源地址（留空 = 不联网检查）",
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "本应用没有内置更新服务器，默认不联网。填入返回版本信息的地址即可真实检查：" +
-                    "{\"version\":\"1.1.0\",\"url\":\"下载页\",\"notes\":\"更新说明\"}；" +
-                    "也可直接填 GitHub 仓库 releases/latest 的地址。",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-
-            Spacer(Modifier.height(12.dp))
-            when {
-                updateChecking -> Text(
-                    "正在检查…",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-
-                updateResult is UpdateChecker.CheckResult.NotConfigured -> Text(
-                    "未配置更新源地址，无法联网检查——所以这里不会告诉你「已是最新」。\n" +
-                        "想知道这个版本改了什么，可展开本页下方的更新日志。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-
-                updateResult is UpdateChecker.CheckResult.UpToDate -> Text(
-                    "已是最新版本（v$appVersion）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MiuixPrimary,
-                )
-
-                updateResult is UpdateChecker.CheckResult.Failed -> Text(
-                    "检查失败：${(updateResult as UpdateChecker.CheckResult.Failed).reason}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppleRed,
-                )
-
-                updateResult is UpdateChecker.CheckResult.Available -> {
-                    val info = (updateResult as UpdateChecker.CheckResult.Available).info
-                    Text(
-                        "发现新版本 v${info.version}",
-                        fontWeight = FontWeight.Medium,
-                        color = MiuixPrimary,
-                    )
-                    if (info.notes.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            // 更新说明可能是一整篇发布日志，弹窗里给个可读的摘要即可
-                            info.notes.take(NOTES_MAX_CHARS) +
-                                if (info.notes.length > NOTES_MAX_CHARS) "\n…（完整说明见发布页）" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    if (info.url.isNotBlank()) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "打开发布页",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    runCatching { uriHandler.openUri(info.url) }
-                                }
-                                .padding(vertical = 10.dp),
-                            color = MiuixPrimary,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
-                }
-            }
-        }
-    }
+    // 更新弹窗统一挂在 AppRoot（A/B 共用一个实例），本页只负责触发手动检查。
 }
 
 /**
@@ -743,6 +581,7 @@ fun AboutScreen(
  */
 @Composable
 private fun AboutCollapsibleCard(
+    containerColor: Color,
     title: String,
     endText: String? = null,
     expanded: Boolean,
@@ -753,9 +592,7 @@ private fun AboutCollapsibleCard(
     top.yukonga.miuix.kmp.basic.Card(
         modifier = modifier.fillMaxWidth(),
         cornerRadius = Radius.xxl,
-        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(
-            MaterialTheme.colorScheme.surface,
-        ),
+        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(containerColor),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -821,15 +658,14 @@ private fun AboutCollapsibleCard(
 /** 关于页分组卡片（左右留白由 [AboutSection] 统一提供） */
 @Composable
 private fun AboutCard(
+    containerColor: Color,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     top.yukonga.miuix.kmp.basic.Card(
         modifier = modifier.fillMaxWidth(),
         cornerRadius = Radius.xxl,
-        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(
-            MaterialTheme.colorScheme.surface,
-        ),
+        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(containerColor),
     ) {
         Column(modifier = Modifier.fillMaxWidth(), content = content)
     }
@@ -859,7 +695,7 @@ private fun AboutSection(
 }
 
 /**
- * 身份区：图标 + 名称 + 版本 + 一句话定位。
+ * 身份区：图标 + 名称 + 版本号。
  *
  * 宽屏（平板 / 桌面窗口）改为横向排布：竖排居中在宽屏上会留下大片空白，
  * 横向「图标 + 信息」更紧凑，也更像应用信息页而不是启动画面。
@@ -870,8 +706,6 @@ private fun AboutHero(
     appIcon: ImageBitmap?,
     appName: String,
     version: String,
-    buildNumber: Long,
-    releaseDate: String?,
     progress: Float,
 ) {
     val screenPadding = LocalDimens.current.screenPadding
@@ -897,7 +731,7 @@ private fun AboutHero(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Spacer(Modifier.height(8.dp))
-                    AboutHeroMeta(version, buildNumber, releaseDate)
+                    AboutVersionPill(version)
                 }
             }
         } else {
@@ -914,39 +748,8 @@ private fun AboutHero(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.height(10.dp))
-                AboutHeroMeta(version, buildNumber, releaseDate)
+                AboutVersionPill(version)
             }
-        }
-    }
-}
-
-/**
- * 身份区的第二、三行：版本胶囊 + 一句话定位；下面再补一行
- * 「构建 3 · 2026-11-03 发布」——版本号、构建号、发布日期放在一起才算完整的版本信息。
- */
-@Composable
-private fun AboutHeroMeta(version: String, buildNumber: Long, releaseDate: String?) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AboutVersionPill(version)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "本地记账 · 数据只存本机",
-                fontSize = 12.sp,
-                color = TextSecondary,
-            )
-        }
-        val meta = listOfNotNull(
-            "构建 $buildNumber".takeIf { buildNumber > 0 },
-            "$releaseDate 发布".takeIf { !releaseDate.isNullOrBlank() },
-        ).joinToString(" · ")
-        if (meta.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = meta,
-                fontSize = 11.5.sp,
-                color = TextSecondary,
-            )
         }
     }
 }
@@ -1052,29 +855,6 @@ private fun AboutEntryRow(
     }
 }
 
-/** 简介卡里的一个特性：主标签 + 一句说明，等宽三列 */
-@Composable
-private fun AboutFeature(label: String, caption: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = label,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.height(3.dp))
-        Text(
-            text = caption,
-            fontSize = 11.sp,
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
 /**
  * 组内分割线。
  *
@@ -1122,11 +902,11 @@ private fun cropBitmapToOpaque(source: Bitmap): Bitmap {
     return Bitmap.createBitmap(source, minX, minY, croppedWidth, croppedHeight)
 }
 
+/** 致谢项目名的链接色（按视觉稿 #3175dd） */
+private val ThanksLinkColor = Color(0xFF3175DD)
+
 /**
- * 致谢项目单项：名称 + 作者 + 贡献说明。
- *
- * 去掉了原来的「卡片套卡片」底色块（整卡已有 surface 底，再套一层 surfaceVariant
- * 会形成三层嵌套），改为纯文本行 + 分割线；作者信息也补回来了（数据里本来就有）。
+ * 致谢项目单项：左侧项目名、右侧作者，整行可点开仓库。
  */
 @Composable
 private fun ThanksItem(
@@ -1144,65 +924,26 @@ private fun ThanksItem(
                     Modifier
                 }
             )
-            .padding(vertical = 12.dp),
-        // 顶部对齐：贡献说明可能有两三行，箭头若垂直居中会飘在段落中间
-        verticalAlignment = Alignment.Top,
+            .padding(vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = item.name,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    // 有链接才用主色：主色 + 可点 = 链接；无链接保持正文色
-                    color = if (linked) MiuixPrimary else MaterialTheme.colorScheme.onSurface,
-                )
-                if (item.author.isNotBlank()) {
-                    Text(
-                        text = item.author,
-                        fontSize = 12.sp,
-                        color = TextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 8.dp),
-                    )
-                }
-                // 依赖类项目顺手标上许可证，省得再去许可页翻一遍
-                if (item.license.isNotBlank()) {
-                    Text(
-                        text = item.license,
-                        fontSize = 10.5.sp,
-                        color = MiuixPrimary,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .padding(start = 8.dp)
-                            .clip(RoundedCornerShape(Radius.pill))
-                            .background(MiuixPrimary.copy(alpha = 0.1f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                }
-            }
-            if (item.contribution.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = item.contribution,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = TextSecondary,
-                )
-            }
-        }
-        if (linked) {
-            Icon(
-                imageVector = MiuixIcons.ChevronForward,
-                contentDescription = "访问项目",
-                tint = TextSecondary,
-                modifier = Modifier
-                    // 与名称首行视觉对齐（15sp 行高约 20dp，18dp 图标补 1dp）
-                    .padding(start = 8.dp, top = 1.dp)
-                    .size(18.dp),
+        Text(
+            text = item.name,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            // 有链接才用链接色：链接色 + 可点 = 链接；无链接保持正文色
+            color = if (linked) ThanksLinkColor else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        if (item.author.isNotBlank()) {
+            Text(
+                text = item.author,
+                fontSize = 12.5.sp,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End,
+                modifier = Modifier.padding(start = 10.dp),
             )
         }
     }

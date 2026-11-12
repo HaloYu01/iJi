@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -42,9 +44,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.iji.app.ai.AiConfig
 import com.iji.app.ui.components.IjiFormCard
-import com.iji.app.ui.components.IjiFormSectionTitle
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiButtonFocusRing
+import com.iji.app.ui.components.ijiPrimaryButtonColors
 import com.iji.app.ui.components.ijiIconFocusRing
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.MiuixPrimary
@@ -62,6 +64,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Hide
@@ -146,8 +149,10 @@ internal fun AiServiceSection(
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        IjiFormSectionTitle("模型服务")
+    // 与设置页同款节奏：标题→内容 10dp（SmallTitle 自带），组与组之间 12dp（下方 Spacer）。
+    // 原来标题与内容块是 spacedBy 的平级子项，标题自带 6dp + 组间距 10dp = 16dp，松了一倍。
+    Column {
+        SmallTitle(text = "模型服务", insideMargin = PaddingValues(bottom = 10.dp))
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // 平板 / 横屏三列，手机两列：不靠拉宽单个卡片填满空间
             val columns = if (maxWidth >= 520.dp) 3 else 2
@@ -159,7 +164,8 @@ internal fun AiServiceSection(
             )
         }
 
-        IjiFormSectionTitle("接口配置")
+        Spacer(Modifier.height(12.dp))
+        SmallTitle(text = "接口配置", insideMargin = PaddingValues(bottom = 10.dp))
         IjiFormCard {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                 TextField(
@@ -245,12 +251,12 @@ internal fun AiServiceSection(
                     Button(
                         onClick = { save() },
                         enabled = dirty,
-                        colors = ButtonDefaults.buttonColorsPrimary(),
+                        colors = ijiPrimaryButtonColors(),
                         modifier = Modifier
                             .weight(1f)
                             .ijiButtonFocusRing(shape = ContinuousRoundedRectangle(ButtonDefaults.CornerRadius)),
                     ) {
-                        Text("保存配置", fontWeight = FontWeight.SemiBold)
+                        Text("保存配置", color = Color.White, fontWeight = FontWeight.SemiBold)
                     }
                     Button(
                         onClick = { startTest() },
@@ -353,8 +359,8 @@ private fun ProviderTile(
     }
 }
 
-/** 测试结果：成功 / 失败只区分语义，文案由请求结果给出 */
-private sealed interface TestOutcome {
+/** 测试结果：成功 / 失败只区分语义，文案由请求结果给出。开局引导页复用同一份连接测试。 */
+internal sealed interface TestOutcome {
     val message: String
 
     data class Success(override val message: String) : TestOutcome
@@ -383,7 +389,7 @@ private fun TestResultRow(result: TestOutcome) {
  * 刻意不复用业务请求：连接测试要**快**（10s/15s 超时），配错了立刻能看到；
  * 业务请求是 30s/60s，拿它测试会让「填错了」的反馈慢得离谱。
  */
-private fun testConnection(url: String, apiKey: String, model: String): TestOutcome {
+internal fun testConnection(url: String, apiKey: String, model: String): TestOutcome {
     if (url.isBlank()) return TestOutcome.Failure("请先填写 API 地址")
     if (model.isBlank()) return TestOutcome.Failure("请先填写模型名称")
     if (apiKey.isBlank()) return TestOutcome.Failure("请先填写 API Key")

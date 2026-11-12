@@ -1,5 +1,7 @@
 package com.iji.app.ui.components
 
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -11,44 +13,37 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.SnackbarResult
 
 /**
- * 轻量提示（Snackbar）的统一入口。
+ * 轻量提示的统一入口（全 App 通用）。
  *
- * **背景**：此前各处直接用 `Toast.makeText(...)`，问题是样式不受控、不支持动作按钮、
- * 不跟随主题、且与 Miuix 设计语言不一致。这里基于 Miuix `SnackbarHostState` 封装一层，
- * 让调用方**无需处理协程**（`showSnackbar` 是 suspend 函数）。
+ * **当前口径（全局统一 Toast）**：纯文本提示一律走系统 **Toast**——样式统一、
+ * 不占页面布局、浮层（悬浮面板 / 抽屉）打开时也能看到；`duration` 映射为
+ * Toast 时长（Short ≈ 2s，Long ≈ 3.5s）。
+ *
+ * **唯一的例外是带动作按钮的提示**（如「已记一笔 · 撤销」）：Toast 放不了按钮，
+ * 这类调用保留 Miuix Snackbar（Host 由 `AppRoot` 渲染）。
  *
  * **基础用法**
  * ```
- * // 1）最简单：纯文本提示
  * val snackbar = LocalSnackbarController.current
- * snackbar.show("已保存")
- *
- * // 2）带动作（如"撤销"）
- * snackbar.show("已删除", actionLabel = "撤销") { undo() }
- *
- * // 3）长时提示
- * snackbar.show("导入完成", duration = SnackbarDuration.Long)
+ * snackbar.show("已保存")                       // Toast
+ * snackbar.show("已记一笔", "撤销") { undo() }   // Snackbar（带动作按钮）
+ * snackbar.show("导入完成", duration = SnackbarDuration.Long)  // Toast，更长停留
  * ```
  *
  * **接入方式**：由宿主（当前是 `AppRoot`）创建 `SnackbarHostState`，
- * 通过 [LocalSnackbarController] 提供，并在 Scaffold 的 `snackbarHost` 渲染 `SnackbarHost`。
- *
- * **后续可扩展方向**
- * - 语义化封装：`showSuccess/showError/showInfo`，按语义自动匹配图标与配色。
- * - 队列与去重：相同文案短时间内重复触发时合并，避免刷屏。
- * - 与 [ContentState] 联动：失败态自动附带"重试"动作（复用 [ContentState.Error] 的 message）。
- * - 支持自定义 `content`（Miuix `SnackbarHost` 已支持），实现带图标/进度的富提示。
+ * 通过 [LocalSnackbarController] 提供；Context 由 [rememberSnackbarController] 取自组合。
  */
 class SnackbarController internal constructor(
     private val hostState: SnackbarHostState?,
     private val scope: CoroutineScope?,
+    private val toastContext: Context?,
 ) {
 
     /**
      * 显示一条轻量提示。
      *
      * @param message 提示文案。
-     * @param actionLabel 动作按钮文案；为 null 则不显示动作。
+     * @param actionLabel 动作按钮文案；为 null 则纯文本走 Toast，非 null 走 Snackbar（可点击动作）。
      * @param onAction 用户点击动作按钮时的回调（仅在 [actionLabel] 非 null 时可能触发）。
      * @param duration 显示时长，默认 [SnackbarDuration.Short]。
      */
@@ -58,6 +53,17 @@ class SnackbarController internal constructor(
         onAction: (() -> Unit)? = null,
         duration: SnackbarDuration = SnackbarDuration.Short,
     ) {
+        // 纯文本提示 → Toast：不占布局、浮层之上也可见；时长跟随 duration 口径
+        if (actionLabel == null) {
+            val context = toastContext ?: return
+            Toast.makeText(
+                context,
+                message,
+                if (duration == SnackbarDuration.Long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        // 带动作按钮 → Snackbar（Toast 放不了按钮；目前仅「撤销」类场景使用）
         val state = hostState ?: return
         val coroutineScope = scope ?: return
         coroutineScope.launch {
@@ -72,20 +78,23 @@ class SnackbarController internal constructor(
 
     companion object {
         /** 未接入宿主时的空实现，保证 `LocalSnackbarController.current.show(...)` 永远安全。 */
-        val NoOp = SnackbarController(null, null)
+        val NoOp = SnackbarController(null, null, null)
     }
 }
 
-/** 当前可用的 Snackbar 控制器；宿主未接入时为 [SnackbarController.NoOp]（调用即空操作）。 */
+/** 当前可用的提示控制器；宿主未接入时为 [SnackbarController.NoOp]（调用即空操作）。 */
 val LocalSnackbarController = staticCompositionLocalOf { SnackbarController.NoOp }
 
 /** 在宿主处创建并记住 [SnackbarHostState]。 */
 @Composable
 fun rememberSnackbarHostState(): SnackbarHostState = remember { SnackbarHostState() }
 
-/** 在宿主处由 [SnackbarHostState] 派生出 [SnackbarController]。 */
+/** 在宿主处由 [SnackbarHostState] 派生出提示控制器（Toast 用 Context 取自当前组合）。 */
 @Composable
 fun rememberSnackbarController(hostState: SnackbarHostState): SnackbarController {
     val scope = rememberCoroutineScope()
-    return remember(hostState, scope) { SnackbarController(hostState, scope) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember(hostState, scope, context) {
+        SnackbarController(hostState, scope, context)
+    }
 }

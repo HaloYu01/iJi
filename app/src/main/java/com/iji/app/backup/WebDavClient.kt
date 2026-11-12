@@ -13,7 +13,7 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * 极简 WebDAV 客户端：只做云备份真正需要的四件事 —— 探活 / 列目录 / 上传 / 下载。
+ * 极简 WebDAV 客户端：只做云备份真正需要的五件事 —— 探活 / 列目录 / 上传 / 下载 / 删除。
  *
  * 为什么是 WebDAV：坚果云、Nextcloud、群晖、Apache/Nginx 的 dav 模块都提供它，
  * 一个实现就能覆盖绝大多数「网盘」；而 Dropbox / OneDrive 需要各自的 OAuth 应用与审核，
@@ -81,7 +81,8 @@ class WebDavClient(
             client.newCall(propfindRequest(baseUrl, depth = "1")).execute().use { resp ->
                 if (resp.code !in 200..299) throw IllegalStateException(httpMessage(resp.code))
                 val xml = resp.body?.string().orEmpty()
-                parseList(xml, extensions).sortedByDescending { it.lastModified }
+                // 名字带毫秒时间戳，倒序即新旧倒序；Last-Modified 是日期串，字典序先比星期几，排不对
+                parseList(xml, extensions).sortedByDescending { it.name }
             }
         }.tidy()
     }
@@ -92,6 +93,17 @@ class WebDavClient(
             client.newCall(request(url).get().build()).execute().use { resp ->
                 if (resp.code !in 200..299) throw IllegalStateException(httpMessage(resp.code))
                 resp.body?.bytes() ?: ByteArray(0)
+            }
+        }.tidy()
+    }
+
+    /** 删除（DELETE）。404 视为目标已不存在——对用户而言结果与删除成功一致 */
+    suspend fun delete(url: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            client.newCall(request(url).delete().build()).execute().use { resp ->
+                if (resp.code !in 200..299 && resp.code != 404) {
+                    throw IllegalStateException(httpMessage(resp.code))
+                }
             }
         }.tidy()
     }

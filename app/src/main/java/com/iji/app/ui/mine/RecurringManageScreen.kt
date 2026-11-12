@@ -41,6 +41,7 @@ import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiPrimaryButtonBlue
 import com.iji.app.ui.components.IjiDangerTextAction
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
@@ -49,6 +50,7 @@ import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.DividerGray
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
@@ -60,6 +62,7 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 频率文案 */
 private val FREQ_LABEL: Map<RecurrenceFreq, String> = mapOf(
@@ -101,7 +104,7 @@ private fun dateLabel(d: LocalDate, today: LocalDate): String {
 @Composable
 fun RecurringManageScreen(
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val accounts by app.accounts.collectAsStateWithLifecycle()
@@ -176,7 +179,7 @@ fun RecurringManageScreen(
                 .fillMaxWidth()
                 .padding(horizontal = LocalDimens.current.screenPadding, vertical = 16.dp)
                 .clip(RoundedCornerShape(Radius.xl))
-                .background(MiuixPrimary)
+                .background(IjiPrimaryButtonBlue)
                 .clickable {
                     editing = RecurringRule(
                         type = TransactionType.EXPENSE,
@@ -487,7 +490,7 @@ private fun RecurringRuleRow(
                 CategoryIconImage(
                     name = category.name,
                     color = Color(category.color),
-                    size = 36.dp,
+                    size = IjiIconSize.ListRow,
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {

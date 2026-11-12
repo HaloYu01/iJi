@@ -84,18 +84,25 @@ class BudgetRepository(
     }
 
     /**
-     * 设置结转：上期未用完的额度是否滚入本期。
-     * 关闭时把已结转额度清零，避免关掉开关后仍享受旧额度。
+     * 设置结转开关。关闭时保留用户设定的固定金额：[rolloverCentsFor] 在未启用时
+     * 直接返回 0，再打开时还能沿用上次设定，不必重填。
      */
     suspend fun setCarryOver(id: Long, enabled: Boolean) {
         val d = dao ?: return
         val entity = d.getById(id) ?: return
-        d.update(
-            entity.copy(
-                carryOver = enabled,
-                rolloverCents = if (enabled) entity.rolloverCents else 0L,
-            ),
-        )
+        d.update(entity.copy(carryOver = enabled))
+    }
+
+    /**
+     * 设置自定义结转金额（分）。
+     *
+     * `0` = 回到「按上期结余自动结转」；`> 0` = 每期固定按这个额度结转。
+     * 复用 budgets.rolloverCents 列，旧数据默认值 0 行为不变，无需数据库升级。
+     */
+    suspend fun setCarryOverAmount(id: Long, amountCents: Long) {
+        val d = dao ?: return
+        val entity = d.getById(id) ?: return
+        d.update(entity.copy(rolloverCents = amountCents.coerceAtLeast(0L)))
     }
 
     suspend fun setEnabled(id: Long, enabled: Boolean) {
@@ -141,9 +148,13 @@ class BudgetRepository(
      * 否则结余会一期期滚雪球，预算额度被无限放大。
      *
      * CUSTOM 周期没有「上一周期」的概念，直接返回 0。
+     *
+     * 例外：`budget.rolloverCents > 0` 表示用户设了固定结转额度，直接采用、跳过自动结算。
      */
     suspend fun rolloverCentsFor(budget: Budget, at: LocalDate = LocalDate.now()): Long {
         if (!budget.carryOver) return 0L
+        // 固定额度优先；0 = 未设置，继续按上期真实结余实时算（兼容旧数据）。
+        if (budget.rolloverCents > 0L) return budget.rolloverCents
         val prevAt = when (budget.periodType) {
             BudgetPeriodType.MONTH -> at.minusMonths(1)
             BudgetPeriodType.WEEK -> at.minusWeeks(1)

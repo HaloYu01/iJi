@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -49,10 +50,13 @@ import com.iji.app.accessibility.PaymentAccessibilityStatus
 import com.iji.app.reminder.SuperIslandNotifier
 import com.iji.app.shizuku.ShizukuBridge
 import com.iji.app.shizuku.ShizukuState
+import com.iji.app.data.repository.SettingsRepository
+import com.iji.app.ui.components.IjiSettingsDivider
+import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.overlay.BillOverlay
 import com.iji.app.ui.theme.AppleOrange
-import com.iji.app.ui.theme.AppleSeparator
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
@@ -64,15 +68,15 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 
 /** 单项检测结论三态：OK 就绪 · WARN 需要处理 · SKIP 无法检测 / 不强制（不计入失败） */
-private enum class CheckStatus { OK, WARN, SKIP }
+internal enum class CheckStatus { OK, WARN, SKIP }
 
 /**
- * 一项运行前提的检测结果。
+ * 一项运行前提的检测结果。开局引导页的「权限」步骤复用同一份检测，避免两处口径漂移。
  *
  * @param key 动作分发用的稳定 id（见 [PermissionCheckScreen] 内的 runAction）
  * @param actionLabel 右侧修复动作文案；null = 当前状态无需动作
  */
-private data class CheckItem(
+internal data class CheckItem(
     val key: String,
     val title: String,
     val detail: String,
@@ -80,7 +84,8 @@ private data class CheckItem(
     val actionLabel: String? = null,
 )
 
-private const val KEY_NOTIFICATION = "notification"
+internal const val KEY_NOTIFICATION = "notification"
+private const val KEY_OVERLAY = "overlay"
 private const val KEY_BATTERY = "battery"
 private const val KEY_BACKGROUND = "background"
 private const val KEY_AUTOSTART = "autostart"
@@ -91,10 +96,11 @@ private const val KEY_ACCESSIBILITY = "accessibility"
 private const val MIUI_OP_AUTO_START = 10008
 
 /**
- * 权限检验页（偏好设置 → 权限检验）。
+ * 权限检验页（自动记账 → 权限就绪度 / 检查并开启权限）。
  *
  * 这个 App 的核心链路对系统权限有一串「缺一个就静默失效」的运行前提：
- * 通知被关 → 所有提醒无声消失；电池优化没忽略 / 自启动被禁 → 进程被杀后提醒停摆；
+ * 通知被关 → 所有提醒无声消失；悬浮窗没授权 → 识屏结果弹不出确认卡片；
+ * 电池优化没忽略 / 自启动被禁 → 进程被杀后提醒停摆；
  * Shizuku 没运行/没授权 → 超级岛绕不过云端校验；无障碍没开 → 支付通知无法自动记账。
  * 这些前提散落在系统设置各处，出问题时用户无从排查 —— 本页把它们一次性亮出来。
  *
@@ -107,13 +113,22 @@ private const val MIUI_OP_AUTO_START = 10008
 @Composable
 fun PermissionCheckScreen(
     onBack: () -> Unit,
-    /** Shizuku 未安装 / 版本过低时跳「识屏与授权」页看完整引导 */
-    onOpenScreenCapture: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
 
     var items by remember { mutableStateOf(detectPermissions(context)) }
+    // 首次说明卡：第一次进本页（含从开局引导跳进来）自动展开，点「知道了」后收起，
+    // 页底「查看说明」随时能重新展开 —— 配置必须能清除，不做一次性跑不掉的提示。
+    var guideVisible by remember {
+        mutableStateOf(
+            !SettingsRepository.getBoolean(
+                context,
+                SettingsRepository.KEY_PERMISSION_GUIDE_SHOWN,
+                false,
+            ),
+        )
+    }
 
     // 去系统设置授权后回来（ON_RESUME）自动重查；通知权限的运行时弹窗关闭也走 launcher 回调刷新
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -138,72 +153,16 @@ fun PermissionCheckScreen(
     val neededCount = items.count { it.status != CheckStatus.SKIP }
     val allOk = okCount == neededCount
 
-    // 修复动作：每项一个稳定跳转目标；系统没有对应入口时逐级回落，不允许「点了没反应」
+    // 修复动作：与开局引导第 4 步共用同一份，逐项跳对应系统开关、失败逐级回落
     val runAction: (CheckItem) -> Unit = { item ->
-        runCatching {
-            when (item.key) {
-                KEY_NOTIFICATION -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        openAppNotificationSettings(context)
-                    }
-                }
-
-                KEY_BATTERY -> runCatching {
-                    // 直接申请弹窗（需 manifest 声明 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS）
-                    context.startActivity(
-                        Intent(
-                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                            Uri.parse("package:${context.packageName}"),
-                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }.getOrElse {
-                    // 个别 ROM 移除了直接申请入口，回落到白名单总列表（无需权限声明）
-                    context.startActivity(
-                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-
-                KEY_BACKGROUND -> openAppDetails(context)
-
-                KEY_AUTOSTART -> {
-                    val opened = runCatching {
-                        // MIUI/HyperOS 的自启动管理页（安全中心内）；签名/包名随版本变化，失败即回落
-                        context.startActivity(
-                            Intent().setComponent(
-                                ComponentName(
-                                    "com.miui.securitycenter",
-                                    "com.miui.permcenter.autostart.AutoStartManagementActivity",
-                                ),
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }.isSuccess
-                    if (!opened) openAppDetails(context)
-                }
-
-                KEY_SHIZUKU -> when (
-                    runCatching { ShizukuBridge.state(context) }
-                        .getOrDefault(ShizukuState.NOT_INSTALLED)
-                ) {
-                    ShizukuState.NOT_RUNNING ->
-                        if (!ShizukuBridge.openManager(context)) {
-                            snackbar.show("无法打开 Shizuku，请手动启动它")
-                        }
-
-                    ShizukuState.NO_PERMISSION -> ShizukuBridge.requestPermission()
-                    // 未装 / 版本过低：给「识屏与授权」页的完整引导，比一个 snackbar 有用
-                    ShizukuState.NOT_INSTALLED, ShizukuState.UNSUPPORTED -> onOpenScreenCapture()
-                    ShizukuState.READY -> {}
-                }
-
-                KEY_ACCESSIBILITY ->
-                    if (!PaymentAccessibilityStatus.openSettings(context)) {
-                        snackbar.show("无法打开无障碍设置，请手动前往")
-                    }
-            }
-        }.onFailure { snackbar.show("无法打开对应设置页，请手动前往系统设置") }
+        runPermissionAction(
+            context = context,
+            item = item,
+            onRequestNotificationPermission = {
+                permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            },
+            onMessage = { message -> snackbar.show(message) },
+        )
     }
 
     MineSubPage(title = "权限检验", onBack = onBack) {
@@ -215,6 +174,46 @@ fun PermissionCheckScreen(
                 .padding(top = ijiTopBarContentPadding(), bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            // 首次说明卡：把「为什么缺一个就静默失效」讲清楚，避免用户把 7 项当成强制授权清单
+            if (guideVisible) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = Radius.xxl,
+                    colors = CardDefaults.defaultColors(MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                        Text(
+                            "为什么需要这些权限",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "记账本身不需要任何权限。下面这些只影响提醒送达、识屏确认卡片、" +
+                                "后台保活与自动记账：缺一个，对应功能会静默失效而不会弹错。" +
+                                "Shizuku 与自启动是可选增强，未安装或读不到不算故障。" +
+                                "本页只做只读检测，点击条目会带你去系统开关，不会替你修改设置。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            lineHeight = 19.sp,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        IjiTextAction(
+                            text = "知道了",
+                            compact = true,
+                            onClick = {
+                                guideVisible = false
+                                SettingsRepository.setBoolean(
+                                    context,
+                                    SettingsRepository.KEY_PERMISSION_GUIDE_SHOWN,
+                                    true,
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+
             // 汇总卡（克制的一行结论，不做大数字，避免和下方行内文字抢层级）
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -231,7 +230,7 @@ fun PermissionCheckScreen(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         if (allOk) {
-                            "提醒、后台保活与自动记账的运行前提全部满足"
+                            "提醒、识屏确认、后台保活与自动记账的运行前提全部满足"
                         } else {
                             "逐项处理「需处理」的行，回到本页会自动重新检测"
                         },
@@ -250,25 +249,20 @@ fun PermissionCheckScreen(
                 Column {
                     items.forEachIndexed { index, item ->
                         CheckRow(item = item, onAction = { runAction(item) })
-                        if (index < items.lastIndex) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 20.dp)
-                                    .height(0.5.dp)
-                                    .background(AppleSeparator),
-                            )
-                        }
+                        if (index < items.lastIndex) IjiSettingsDivider()
                     }
                 }
             }
 
-            Text(
-                "本页只做只读状态查询；点击「需处理」的行跳转对应开关页，完成后返回自动刷新。",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "本页只做只读状态查询；点击「需处理」的行跳转对应开关页，完成后返回自动刷新。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.weight(1f),
+                )
+                IjiTextAction(text = "查看说明", compact = true, onClick = { guideVisible = true })
+            }
         }
     }
 }
@@ -315,16 +309,37 @@ private fun CheckRow(item: CheckItem, onAction: () -> Unit) {
     }
 }
 
-// ── 检测逻辑（纯函数，ON_RESUME 时整表重算）──────────────────────────────────
+// ── 检测逻辑（纯函数，ON_RESUME 时整表重算；开局引导页复用同一份）──────────────
 
-private fun detectPermissions(context: Context): List<CheckItem> = listOf(
+internal fun detectPermissions(context: Context): List<CheckItem> = listOf(
     notificationItem(context),
+    overlayItem(context),
     batteryItem(context),
     backgroundItem(context),
     autoStartItem(context),
     shizukuItem(context),
     accessibilityItem(context),
 )
+
+/**
+ * 悬浮窗权限（识屏记账的确认卡片要浮在其他应用之上）。
+ * 复用 [BillOverlay.canShow] 的口径，保证权限页的结论与实际弹窗判断一致：
+ * 未授权时 BillOverlay.show 会退回通知，用户看到的就是「识屏结果没有卡片」。
+ */
+private fun overlayItem(context: Context): CheckItem {
+    val granted = runCatching { BillOverlay.canShow(context) }.getOrDefault(false)
+    return CheckItem(
+        key = KEY_OVERLAY,
+        title = "悬浮窗权限",
+        detail = if (granted) {
+            "已授权，识屏记账的确认卡片可浮在其他应用上"
+        } else {
+            "未授权，识屏结果无法弹出确认卡片，会退回通知"
+        },
+        status = if (granted) CheckStatus.OK else CheckStatus.WARN,
+        actionLabel = if (granted) null else "去开启",
+    )
+}
 
 /**
  * 通知权限。用 areNotificationsEnabled 而不是 checkSelfPermission：
@@ -496,6 +511,94 @@ private fun accessibilityItem(context: Context): CheckItem {
 }
 
 // ── 跳转工具（runCatching 在调用侧统一包）──────────────────────────────────
+
+/**
+ * 执行一项运行前提的修复动作：每项一个稳定跳转目标，系统没有对应入口时逐级回落，
+ * 不允许「点了没反应」。
+ *
+ * 抽成共享函数是因为开局引导第 4 步也直接调用它（点某项 → 直接进系统开关），
+ * 两处若各写一份，跳转目标与回落链必然漂移。
+ *
+ * @param onRequestNotificationPermission Android 13+ 用运行时弹窗申请通知权限；
+ *        由调用侧传自己的 launcher，保证授权结果回调后能重新检测
+ * @param onMessage 无法跳转 / 无可跳页面时向用户交代原因（调用侧的 snackbar）
+ */
+internal fun runPermissionAction(
+    context: Context,
+    item: CheckItem,
+    onRequestNotificationPermission: () -> Unit,
+    onMessage: (String) -> Unit,
+) {
+    runCatching {
+        when (item.key) {
+            KEY_NOTIFICATION -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    onRequestNotificationPermission()
+                } else {
+                    openAppNotificationSettings(context)
+                }
+            }
+
+            KEY_OVERLAY ->
+                // 个别 ROM 没有 ACTION_MANAGE_OVERLAY_PERMISSION 入口，回落应用详情页
+                if (!BillOverlay.openPermissionSettings(context)) openAppDetails(context)
+
+            KEY_BATTERY -> runCatching {
+                // 直接申请弹窗（需 manifest 声明 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS）
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:${context.packageName}"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.getOrElse {
+                // 个别 ROM 移除了直接申请入口，回落到白名单总列表（无需权限声明）
+                context.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+
+            KEY_BACKGROUND -> openAppDetails(context)
+
+            KEY_AUTOSTART -> {
+                val opened = runCatching {
+                    // MIUI/HyperOS 的自启动管理页（安全中心内）；签名/包名随版本变化，失败即回落
+                    context.startActivity(
+                        Intent().setComponent(
+                            ComponentName(
+                                "com.miui.securitycenter",
+                                "com.miui.permcenter.autostart.AutoStartManagementActivity",
+                            ),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }.isSuccess
+                if (!opened) openAppDetails(context)
+            }
+
+            KEY_SHIZUKU -> when (
+                runCatching { ShizukuBridge.state(context) }
+                    .getOrDefault(ShizukuState.NOT_INSTALLED)
+            ) {
+                ShizukuState.NOT_RUNNING ->
+                    if (!ShizukuBridge.openManager(context)) {
+                        onMessage("无法打开 Shizuku，请手动启动它")
+                    }
+
+                ShizukuState.NO_PERMISSION -> ShizukuBridge.requestPermission()
+                // 未装 / 版本过低：没有应用内引导页可跳，如实提示安装要求
+                ShizukuState.NOT_INSTALLED, ShizukuState.UNSUPPORTED ->
+                    onMessage("需要安装 Shizuku 11 及以上才能用 Shizuku 截屏")
+                ShizukuState.READY -> {}
+            }
+
+            KEY_ACCESSIBILITY ->
+                if (!PaymentAccessibilityStatus.openSettings(context)) {
+                    onMessage("无法打开无障碍设置，请手动前往")
+                }
+        }
+    }.onFailure { onMessage("无法打开对应设置页，请手动前往系统设置") }
+}
 
 private fun openAppNotificationSettings(context: Context) {
     context.startActivity(

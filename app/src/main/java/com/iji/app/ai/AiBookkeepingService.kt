@@ -32,7 +32,16 @@ object AiBookkeepingService {
         val note: String, // 备注
         val accountHint: String, // 账户提示
         val tags: List<String>,
+        /** 识别来源：通知规则 / AI / 本地规则 / 本地识别 / 云端识别。展示给用户判断可信度 */
+        val source: String = "",
     )
+
+    /** 识别来源标记：随 [BillResult] 一起返回，界面标题直接展示，用户有权知道这条结果从哪来 */
+    const val SOURCE_NOTIFICATION = "通知规则"
+    const val SOURCE_AI = "AI"
+    const val SOURCE_LOCAL_RULE = "本地规则"
+    const val SOURCE_LOCAL_OCR = "本地识别"
+    const val SOURCE_CLOUD_VISION = "云端识别"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -77,6 +86,9 @@ object AiBookkeepingService {
      * 三处请求体只差 messages 内容，没必要各写一份 OkHttp。
      */
     fun chat(context: Context, systemPrompt: String, userText: String, temperature: Double = 0.1): String? {
+        // 总开关统一闸门：这里收口所有共用 chat 的 AI 调用（小结 / 分类映射 / 账户映射），
+        // 关掉「AI 识别」后即使 Key 还在也不发任何请求。管线上层已有 useAiFor 挡一道，这是兜底。
+        if (!AiConfig.isEnabled(context)) return null
         val apiKey = AiConfig.getApiKey(context)
         if (apiKey.isBlank()) return null
         val jsonBody = JSONObject().apply {
@@ -103,6 +115,7 @@ object AiBookkeepingService {
         content: String,
         fallbackNote: String,
         keepCategory: Boolean = true,
+        source: String = SOURCE_AI,
     ): BillResult? {
         return try {
             // 去掉可能的 markdown 代码块标记
@@ -124,6 +137,7 @@ object AiBookkeepingService {
                 tags = result.optJSONArray("tags")?.let { arr ->
                     List(arr.length()) { arr.getString(it) }
                 } ?: emptyList(),
+                source = source,
             )
         } catch (e: Exception) {
             e.printStackTrace()
@@ -134,18 +148,19 @@ object AiBookkeepingService {
     /**
      * 解析自然语言为账单。
      *
-     * 三级管线，**默认只在本机跑**（[useAi] 传 null 时按配置，配置默认本地）：
-     * 1. 通知 / 短信规则（[PaymentNotificationParser]）—— 命中的多半是支付通知原文，
-     *    直接按模板取金额，顺便也就不必把短信内容发到云端；
-     * 2. 规则没命中、且用户选了「AI 识别」、且 Key 已配置 → 调大模型；
-     * 3. 仍然没结果 → **本地识别规则**（[LocalRuleEngine]，离线、零成本、用户可编辑）。
+     * 文本解析由「文本识别用 AI」开关决定（[useAi] 传 null 时按配置，配置默认本地）：
+     * 1. **开 = 调用 AI**：直接把文本交给大模型，不再先跑本地通知规则；
+     * 2. **AI 失效 = 降级本地**：没配 Key / 关了总开关 / 请求失败 / 返回空或识别不出金额，
+     *    都回落到「通知 / 短信规则（[PaymentNotificationParser]）→ 本地识别规则
+     *    （[LocalRuleEngine]，离线、零成本、用户可编辑）」；
+     * 3. **关 = 纯本地**：不联网，直接走第 2 步的本地链路。
      *
      * 出结果后再走一次 [enrich]：分类 / 账户对不上用户真实数据时，才补一次
      * 「分类识别」「账户识别」请求（开关在 AI 记账页的「AI 功能」里）。
      *
      * @param text 用户输入，如 "今天午饭花了35块"，也可以直接粘贴支付通知原文
-     * @param useAi 显式指定是否联网；传 null（默认）按用户配置 [AiConfig.parseMode]：
-     *   **默认本地**，选过 AI 但没配 Key（或关了总开关）时**强制本地**。
+     * @param useAi 显式指定是否联网；传 null（默认）按用户配置 [AiConfig.parseMode]。
+     *   选过 AI 但没配 Key（或关了总开关）时强制本地；开 AI 后调用失败同样降级本地。
      *   语音 / 文本 / 图片三个入口都不传，行为只由配置决定，不靠各页面记得传对布尔值
      */
     suspend fun parseBill(text: String, context: Context, useAi: Boolean? = null): BillResult? =
@@ -156,27 +171,35 @@ object AiBookkeepingService {
             enrich(raw, context)
         }
 
-    /** 三级管线本身（不含二次映射） */
+    /** 文本解析管线本身（不含二次映射）：AI 优先，任何形式的失效都降级本地 */
     private fun parseBillByPipeline(
         text: String,
         context: Context,
         useAi: Boolean?,
     ): BillResult? {
+        val allowAi = useAiFor(useAi, AiConfig.parseMode(context), AiConfig.aiReady(context))
+        val byAi = if (allowAi) requestAi(text, context) else null
+        // AI 结果有效就不再跑本地；失效（没开 AI / 没 Key / 请求失败 / 空结果 / 没金额）才降级
+        val byLocal = if (byAi != null && byAi.amountCents > 0) null else localTextParse(text, context)
+        return preferTextResult(byAi, byLocal)
+    }
+
+    /** 文本解析的最终取舍：AI 有可用金额就用 AI，否则一律用本地结果 */
+    fun preferTextResult(ai: BillResult?, local: BillResult?): BillResult? =
+        ai?.takeIf { it.amountCents > 0 } ?: local
+
+    /** 本地兜底链路：通知 / 短信模板 → 本地识别规则。全程离线、零成本 */
+    private fun localTextParse(text: String, context: Context): BillResult? {
         val byRule = PaymentNotificationParser.parse(null, text)
         if (byRule != null && byRule.amountCents > 0) {
             // 备注取商户名：整条通知原文塞进账单备注又长又没信息量；没有商户才回退原文
             return billResultOf(byRule, note = byRule.merchant.ifBlank { text.take(40) })
         }
-        val allowAi = useAiFor(useAi, AiConfig.parseMode(context), AiConfig.aiReady(context))
-        if (allowAi) {
-            val parsed = requestAi(text, context)
-            if (parsed != null && parsed.amountCents > 0) return parsed
-        }
         return localRuleParse(text, LocalRuleStore.rules(context))
     }
 
     /**
-     * 这一次解析是否允许联网（纯函数，可单测）。
+     * 这一次解析是否允许联网。
      *
      * @param requested 调用方的意愿；null（默认）= 完全听配置，false = 明确要求本地，
      *   true = 想用 AI 但**仍受配置约束**（不能绕过下面两条）
@@ -204,6 +227,7 @@ object AiBookkeepingService {
             note = note,
             accountHint = parsed.accountHint,
             tags = emptyList(),
+            source = SOURCE_NOTIFICATION,
         )
 
     /** 走一次大模型；失败返回 null，由调用方回落到本地兜底 */
@@ -215,23 +239,14 @@ object AiBookkeepingService {
     }
 
     /**
-     * 从图片识别账单（视觉模型）
-     *
-     * @param imageBase64 base64 编码的图片
-     * @param useAi 显式指定是否联网；null（默认）按 [AiConfig.parseMode]。
-     * 未配 AI 或本地模式时**不把图片发出去**，直接返回 null，让调用方保留本地 OCR 的结果
+     * 从图片识别账单（视觉模型）。图片链路不看 [AiConfig.parseMode]（那是文本开关）；
+     * AI 不可用或关了「图片识别用 AI」时返回 null，由调用方回落本地 OCR。
      */
     suspend fun parseBillFromImage(
         imageBase64: String,
         context: Context,
-        useAi: Boolean? = null,
     ): BillResult? = withContext(Dispatchers.IO) {
-        // 本地模式 / 关了 AI / 没有密钥：返回 null，调用方落回本地 OCR 结果
-        if (!useAiFor(useAi, AiConfig.parseMode(context), AiConfig.aiReady(context))) {
-            return@withContext null
-        }
-        // 「图片用 AI」单独一个开关：关了就只走本地 OCR，图片不出设备
-        if (!AiConfig.isVisionEnabled(context)) return@withContext null
+        if (!AiConfig.visionUsesAi(context)) return@withContext null
         val apiKey = AiConfig.getApiKey(context)
         val apiUrl = AiConfig.resolvedUrl(context)
 
@@ -262,8 +277,12 @@ object AiBookkeepingService {
         }
 
         val content = postChat(apiUrl, apiKey, jsonBody) ?: return@withContext null
-        val bill = billFromJson(content, "小票识别", keepCategory = AiConfig.isCategoryEnabled(context))
-            ?: return@withContext null
+        val bill = billFromJson(
+            content,
+            "小票识别",
+            keepCategory = AiConfig.isCategoryEnabled(context),
+            source = SOURCE_CLOUD_VISION,
+        ) ?: return@withContext null
         enrich(bill, context)
     }
 
@@ -346,8 +365,9 @@ object AiBookkeepingService {
      * 能在 JVM 单测里逐条锁住（分类、收支方向、金额精度），不用起模拟器。
      */
     internal fun localRuleParse(text: String, rules: List<LocalRule>): BillResult {
-        val amountYuan = extractAmount(text) ?: 0.0
-        val matched = LocalRuleEngine.match(text, rules)
+        // 金额喂给规则引擎做「金额范围」条件（设了条件的规则在没金额时不命中）；没解析出按 0 记
+        val amountYuan = extractAmount(text)
+        val matched = LocalRuleEngine.match(text, rules, amountYuan)
         val detectedType = LocalRuleEngine.detectType(text)
         val type = matched?.rule?.type?.takeIf { it != LocalRule.TYPE_ANY } ?: detectedType
 
@@ -355,10 +375,11 @@ object AiBookkeepingService {
             type = type,
             categoryHint = matched?.rule?.category ?: "其他",
             // 用 round 而不是直接截断：19.90 在 double 里是 1989.9999…，截断会少 1 分
-            amountCents = (amountYuan * 100).roundToLong(),
+            amountCents = ((amountYuan ?: 0.0) * 100).roundToLong(),
             note = text,
             accountHint = matched?.rule?.account.orEmpty(),
             tags = emptyList(),
+            source = SOURCE_LOCAL_RULE,
         )
     }
 

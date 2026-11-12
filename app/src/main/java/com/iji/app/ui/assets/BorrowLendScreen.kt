@@ -45,6 +45,7 @@ import com.iji.app.data.model.Transaction
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.ContentState
+import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.StateView
@@ -52,12 +53,13 @@ import com.iji.app.ui.components.SubPageTopBar
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.theme.AppleOrange
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
-import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.map
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 借贷记录页：展示某一方向（借入 / 借出）的全部订单。
@@ -69,7 +71,7 @@ fun BorrowLendScreen(
     initialDirection: String,
     onBack: () -> Unit = {},
     onOpenOrder: (Long) -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     // null = Room 首帧还没到（和「确实没有记录」区分开，只有前者显示加载态）
     val transactionFlow = remember(app) {
@@ -88,8 +90,17 @@ fun BorrowLendScreen(
     val snackbar = LocalSnackbarController.current
 
     val listState = rememberLazyListState()
-    // 切换方向后回到顶部，否则会停留在上一个列表的滚动位置
-    LaunchedEffect(direction) { listState.scrollToItem(0) }
+    // 切换方向后回到顶部，否则会停留在上一个列表的滚动位置。
+    // LaunchedEffect 在每次进入组合时都会跑（从详情页返回是全新组合），无条件复位会把
+    // 恢复的滚动位置打回顶部——与首页「切 tab 回来就置顶」同一根源，同样用 saveable
+    // 消费标记只认真变更（direction 是路由参数，往返后值不变就不复位）。
+    var directionResetKey by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(direction) {
+        if (directionResetKey != "$direction") {
+            listState.scrollToItem(0)
+            directionResetKey = "$direction"
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         SubPageTopBar(title = "借贷记录", onBack = onBack)
@@ -169,41 +180,18 @@ fun BorrowLendScreen(
     }
 }
 
-/** 借入 / 借出切换：与资产页筛选同一套分段控件外观 */
+/** 借入 / 借出切换：与资产页筛选同一套分段控件外观，切换动画走共用底座滑动指示器 */
 @Composable
 private fun DirectionSwitch(
     direction: BorrowDirection,
     onChange: (BorrowDirection) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.xxl))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            .padding(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BorrowDirection.entries.forEach { option ->
-            val selected = option == direction
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 36.dp)
-                    .clip(RoundedCornerShape(Radius.xxl))
-                    .background(if (selected) MiuixPrimary else Color.Transparent)
-                    .clickable(enabled = !selected) { onChange(option) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    option.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) Color.White else TextSecondary,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
+    IjiSegmentedRow(
+        options = BorrowDirection.entries.toList(),
+        selected = direction,
+        onSelect = onChange,
+        label = { it.label },
+    )
 }
 
 /**
@@ -235,7 +223,7 @@ private fun BorrowOrderRow(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CategoryIconImage(name = category.name, color = Color(category.color), size = 36.dp)
+            CategoryIconImage(name = category.name, color = Color(category.color), size = IjiIconSize.ListRow)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(

@@ -27,7 +27,7 @@ data class BudgetEntity(
     val reminderEnabled: Boolean = true,
     /** 是否启用结转：上期未用完的额度滚入本期 */
     val carryOver: Boolean = false,
-    /** 上期结转进来的额度（分） */
+    /** 自定义结转额度（分）：0 = 按上期结余自动结算；>0 = 固定结转该金额 */
     val rolloverCents: Long = 0L,
     /** 仅 CUSTOM 周期使用 */
     val startEpochDay: Long = 0L,

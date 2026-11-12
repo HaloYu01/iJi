@@ -1,0 +1,104 @@
+// 弹窗统一入口壳（标题 + 摘要 + 内容，液态玻璃材质注入）。
+//
+// 1:1 移植自 NexioSchedule fork miuix/src/commonMain/.../overlay/OverlayDialog.kt。
+// 差异：包名按本工程规则落在此处；DialogDefaults / DialogContentLayout 为包内移植件。
+
+package com.iji.app.ui.components.dialog
+
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.DpSize
+import com.kyant.backdrop.Backdrop
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.DialogLayout
+
+/**
+ * A dialog with a title, a summary, and other contents.
+ *
+ * @param show Whether the [OverlayDialog] is shown.
+ * @param modifier The modifier to be applied to the [OverlayDialog].
+ * @param title The title of the [OverlayDialog].
+ * @param titleColor The color of the title.
+ * @param summary The summary of the [OverlayDialog].
+ * @param summaryColor The color of the summary.
+ * @param backgroundColor The background color of the [OverlayDialog].
+ * @param liquidGlassBackdrop The [Backdrop] for liquidGlass blur effect. When non-null, enables blur + edge light.
+ * @param enableWindowDim Whether to enable window dimming when the [OverlayDialog] is shown.
+ * @param onDismissRequest Will called when the user tries to dismiss the Dialog by clicking outside or pressing the back button.
+ * @param onDismissFinished The callback when the [OverlayDialog] is completely dismissed.
+ * @param enablePredictiveBackGesture Whether the dialog follows the predictive back gesture.
+ *   Set to false for dialogs that must not be dismissed by back (e.g. a blocking consent dialog):
+ *   the back gesture is still consumed, but no follow animation is played.
+ * @param outsideMargin The margin outside the [OverlayDialog].
+ * @param insideMargin The margin inside the [OverlayDialog].
+ * @param defaultWindowInsetsPadding Whether to apply default window insets padding to the [OverlayDialog].
+ * @param renderInRootScaffold Whether to render the dialog in the root (outermost) Scaffold.
+ *   When true (default), the dialog covers the full screen. When false, it renders within the
+ *   current Scaffold's bounds.
+ * @param content The [Composable] content of the [OverlayDialog].
+ */
+@Composable
+fun OverlayDialog(
+    show: Boolean,
+    modifier: Modifier = Modifier,
+    title: String? = null,
+    titleColor: Color = DialogDefaults.titleColor(),
+    summary: String? = null,
+    summaryColor: Color = DialogDefaults.summaryColor(),
+    backgroundColor: Color = DialogDefaults.backgroundColor(),
+    liquidGlassBackdrop: Backdrop? = null,
+    enableWindowDim: Boolean = true,
+    onDismissRequest: (() -> Unit)? = null,
+    onDismissFinished: (() -> Unit)? = null,
+    enablePredictiveBackGesture: Boolean = true,
+    outsideMargin: DpSize = DialogDefaults.outsideMargin,
+    insideMargin: DpSize = DialogDefaults.insideMargin,
+    defaultWindowInsetsPadding: Boolean = true,
+    renderInRootScaffold: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+
+    DialogContentLayout(
+        show = show,
+        titleColor = titleColor,
+        summaryColor = summaryColor,
+        backgroundColor = backgroundColor,
+        outsideMargin = outsideMargin,
+        insideMargin = insideMargin,
+        popupHost = { visible, hostContent ->
+            val visibleState = remember { mutableStateOf(false) }
+            visibleState.value = visible
+            DialogLayout(
+                visible = visibleState,
+                enableWindowDim = false,
+                enterTransition = EnterTransition.None,
+                exitTransition = ExitTransition.None,
+                enableAutoLargeScreen = false,
+                renderInRootScaffold = renderInRootScaffold,
+            ) {
+                hostContent()
+            }
+        },
+        liquidGlassBackdrop = liquidGlassBackdrop,
+        isDark = isDark,
+        enablePredictiveBackGesture = enablePredictiveBackGesture,
+        modifier = modifier,
+        title = title,
+        summary = summary,
+        enableWindowDim = enableWindowDim,
+        onDismissRequest = onDismissRequest,
+        onDismissFinished = onDismissFinished,
+        defaultWindowInsetsPadding = defaultWindowInsetsPadding,
+        content = content,
+    )
+}
+
+private fun Color.luminance(): Float {
+    return 0.299f * red + 0.587f * green + 0.114f * blue
+}

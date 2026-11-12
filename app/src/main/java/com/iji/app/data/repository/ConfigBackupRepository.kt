@@ -11,19 +11,10 @@ import org.json.JSONObject
 /**
  * **配置备份**仓库：导出 / 还原「账本环境」，不含交易流水。
  *
- * 为什么必须有这一层：换机最痛的不是丢流水，而是丢**分类、标签、账户、账本、预算、
- * 记账模板、周期规则、偏好设置**——全是用户一份份配出来的。
- * 完整备份（`backup/BackupManager.buildSnapshot()`）已把本仓库的产出作为 `config` 节点
- * 一起打包，本地加密备份、网盘备份、手动「导出备份」三条导出路径共用同一份结构，
- * 还原侧 `importJson` 也是同一份逻辑，不存在「某条路只导流水」的死角。
- *
  * 还原策略一律**合并、不覆盖**：
  * - 同名/同 id 的项目跳过（绝不覆盖用户在本机已有的配置）
  * - 账户余额随账户一并恢复（新设备上无流水可推导余额）
  * - 偏好设置按键覆盖（这些是纯偏好，不涉及数据）
- *
- * 格式用 JSON 而非 YAML：项目已有 org.json（随系统提供），
- * 无需引入额外依赖，且嵌套结构解析更稳。
  */
 object ConfigBackupRepository {
 
@@ -298,6 +289,7 @@ object ConfigBackupRepository {
                             alertThresholdPercent = o.optInt("alertThresholdPercent", match.alertThresholdPercent),
                             reminderEnabled = o.optBoolean("reminderEnabled", match.reminderEnabled),
                             carryOver = o.optBoolean("carryOver", match.carryOver),
+                            rolloverCents = o.optLong("rolloverCents", match.rolloverCents),
                         ),
                     )
                     budgetAdded++
@@ -312,7 +304,7 @@ object ConfigBackupRepository {
                             enabled = o.optBoolean("enabled", true),
                             reminderEnabled = o.optBoolean("reminderEnabled", true),
                             carryOver = o.optBoolean("carryOver", false),
-                            rolloverCents = 0L,
+                            rolloverCents = o.optLong("rolloverCents", 0L),
                             startEpochDay = o.optLong("startEpochDay"),
                             endEpochDay = o.optLong("endEpochDay"),
                             createdAtMillis = System.currentTimeMillis(),

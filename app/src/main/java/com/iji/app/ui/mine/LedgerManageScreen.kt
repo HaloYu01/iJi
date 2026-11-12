@@ -2,6 +2,8 @@ package com.iji.app.ui.mine
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iji.app.MainViewModel
 import com.iji.app.data.model.Currency
 import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiPrimaryButtonBlue
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.WheelOptionDialog
@@ -49,6 +52,7 @@ import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 账本管理页（设置 → 账本管理）。
@@ -65,7 +69,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 @Composable
 fun LedgerManageScreen(
     onBack: () -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val current by viewModel.currentLedger.collectAsStateWithLifecycle()
@@ -86,7 +90,6 @@ fun LedgerManageScreen(
     var mergeTxCount by remember { mutableStateOf(-1) }
     var pickingMergeTarget by remember { mutableStateOf(false) }
 
-    // P0：手搓顶栏 → 统一改用 MineSubPage（顶栏一套，内容从顶栏下方滚过）
     MineSubPage(title = "账本管理", onBack = onBack) {
         LazyColumn(
             modifier = Modifier.weight(1f),
@@ -175,7 +178,7 @@ fun LedgerManageScreen(
                         .fillMaxWidth()
                         .padding(vertical = 8.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(Radius.xxl))
-                        .background(MiuixPrimary)
+                        .background(IjiPrimaryButtonBlue)
                         .clickable {
                             newName = ""
                             // 默认沿用当前账本的币种：多数人新建账本并不是为了换币种
@@ -424,17 +427,25 @@ private fun LedgerActionCell(
     color: androidx.compose.ui.graphics.Color = MiuixPrimary,
     onClick: () -> Unit,
 ) {
+    // 同分段控件：不继承全局 LocalIndication（整格矩形遮罩「方框」），
+    // 反馈改为按压时轻微压暗文字，避免闪出与卡片圆角冲突的方块。
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
-            color = color,
+            color = if (pressed) color.copy(alpha = 0.55f) else color,
         )
     }
 }

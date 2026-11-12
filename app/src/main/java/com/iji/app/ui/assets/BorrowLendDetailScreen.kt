@@ -44,6 +44,7 @@ import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.map
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 借贷订单详情：金额与状态置顶，其余字段（时间 / 对方 / 账户 / 分类 / 备注…）按行平铺。
@@ -54,7 +55,7 @@ import kotlinx.coroutines.flow.map
 fun BorrowLendDetailScreen(
     txId: Long,
     onBack: () -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val transactionFlow = remember(app) {
         app.transactions.map<List<Transaction>, List<Transaction>?> { it }

@@ -4,6 +4,11 @@ import com.iji.app.data.repository.SettingsRepository
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 import android.content.Context
+import androidx.compose.ui.layout.positionInWindow
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenu
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenuItem
+import com.iji.app.ui.components.menu.LiquidGlassDropdownOverlayHost
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import org.json.JSONArray
 
 import androidx.compose.foundation.background
@@ -12,11 +17,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -37,7 +45,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.derivedStateOf
 import com.iji.app.ui.components.IjiTopBar
 import com.iji.app.ui.components.ijiIconFocusRing
+import com.iji.app.ui.components.ijiPrimaryButtonColors
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.ijiTopBarRecordHeight
+import com.iji.app.ui.components.topbar.LiquidTopBarButton
+import com.iji.app.ui.components.topbar.LiquidTopBarButtonSize
 import com.iji.app.ui.components.topbar.topBarContentInset
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -49,7 +61,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.IjiTextAction
-import com.iji.app.ui.components.menu.AnchoredIconDropdownMenu
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import androidx.compose.material.icons.Icons
@@ -65,11 +76,14 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -103,6 +117,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iji.app.DaySummary
 import com.iji.app.MainViewModel
+import com.iji.app.data.model.BudgetAlertLevel
 import com.iji.app.data.model.BudgetProgress
 import com.iji.app.data.model.Currency
 import com.iji.app.data.model.CurrencyDisplay
@@ -111,9 +126,11 @@ import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.budget.BudgetProgressBar
+import com.iji.app.ui.budget.NearLimitColor
 import com.iji.app.ui.components.TransactionRow
 
 import com.iji.app.ui.theme.IncomeGreen
+import com.iji.app.ui.theme.ExpenseAmount
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.minTouchTarget
 import com.iji.app.ui.theme.AppleRed
@@ -131,7 +148,6 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import com.iji.app.DeleteBillsOutcome
-import com.iji.app.ui.AddSheetRequestHolder
 import com.iji.app.ui.components.BillDetailDialog
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.util.saveToDownloads
@@ -148,11 +164,13 @@ import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.ExpandLess
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.ListView
+import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.icon.extended.Tune
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.TextField
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 列表一页渲染多少天：首屏只组合一页，滚到底后再加载 */
 private const val DAYS_PER_PAGE = 20
@@ -162,13 +180,9 @@ private const val DAYS_PER_PAGE = 20
 @Composable
 fun HomeScreen(
     onNavigateMine: () -> Unit = {},
-    /** 点击预算卡片 → 跳预算详情页（budgetId） */
-    onNavigateBudgetDetail: (Long) -> Unit = {},
     /** 账本管理：主页账本下拉菜单末尾的入口 */
     onNavigateLedgerManage: () -> Unit = {},
-    /** 空态里的「记一笔」：面板由 AppRoot 持有，走一次性请求桥接 */
-    onAddBill: () -> Unit = { AddSheetRequestHolder.post() },
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
     viewModel: HomeViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -176,30 +190,37 @@ fun HomeScreen(
         },
     ),
 ) {
-    val days by viewModel.monthSummaries.collectAsStateWithLifecycle()
-    val expenseCents by viewModel.monthExpenseCents.collectAsStateWithLifecycle()
-    val incomeCents by viewModel.monthIncomeCents.collectAsStateWithLifecycle()
-    val budgetExpenseCents by viewModel.monthBudgetExpenseCents.collectAsStateWithLifecycle()
+    // 单一状态源：列表数据与「是否已加载」同一次发射到达，不可能出现
+    // ready 先到、days 还是初始空列表 → 先渲染「无账单」再跳账单
+    val monthState by viewModel.monthUiState.collectAsStateWithLifecycle()
+    val days = monthState.summaries
+    val expenseCents = monthState.expenseCents
+    val incomeCents = monthState.incomeCents
+    val budgetExpenseCents = monthState.budgetExpenseCents
     val monthBudgetProgress by viewModel.monthBudgetProgress.collectAsStateWithLifecycle()
     val month by viewModel.selectedMonth.collectAsStateWithLifecycle()
     val ledger by viewModel.currentLedger.collectAsStateWithLifecycle()
-    // 首帧前列表还没有数据：此时渲染空态会闪一下「本月还没有账单」
-    val ready by viewModel.transactionsReady.collectAsStateWithLifecycle()
+    // 首帧是否就绪由 monthState.loaded 判定，与列表数据同帧到达
+    val ready = monthState.loaded
     // 预算值在屏幕级收集一次：汇总卡和预算弹窗共用，避免同一个 Flow 订阅两遍
     val currentBudget by viewModel.monthlyBudgetCents.collectAsStateWithLifecycle()
     // 读库失败：不能伪装成「没有账单」
     val txError by viewModel.transactionsError.collectAsStateWithLifecycle()
 
-    // 搜索 + 高级筛选（范围 / 类型 / 金额区间 / 日期区间 / 分类），统一放在一个条件对象里
-    var filter by remember { mutableStateOf(SearchFilter()) }
+    // 搜索 + 高级筛选（范围 / 类型 / 金额区间 / 日期区间 / 分类），统一放在一个条件对象里。
+    // saveable：filter 决定列表内容，tab 切走再回来（含进程重建）不能丢，
+    // 否则恢复的滚动位置对应的就是另一批数据。
+    var filter by rememberSaveable(stateSaver = SearchFilterSaver) { mutableStateOf(SearchFilter()) }
     // 输入即时回显，过滤走 250ms 防抖：每敲一个字都重算整本账本是上一版卡顿的根因
-    var queryText by remember { mutableStateOf("") }
+    var queryText by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(queryText) {
         if (queryText == filter.query) return@LaunchedEffect
         delay(250)
         filter = filter.copy(query = queryText)
     }
-    // 搜索框默认收起：首屏多出一行账单；有生效条件时自动展开（否则摘要无从显示）
+    // 搜索框默认收起：首屏多出一行账单；有生效条件时自动展开（否则摘要无从显示）。
+    // 刻意不持久化：带筛选切走再回来，searchVisible 靠 filter.isActive 仍会展开；
+    // 只为「空开着」而恢复它，还会连带自动唤起键盘，得不偿失。
     var searchOpen by remember { mutableStateOf(false) }
     val searchFocus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
@@ -211,6 +232,10 @@ fun HomeScreen(
     }
     var showFilterDialog by remember { mutableStateOf(false) }
     var ledgerMenuOpen by remember { mutableStateOf(false) }
+    // 账本下拉面板锚点（占位图标左上角 root 坐标）与展开 fraction（1:1 控件要求外部持有）
+    val ledgerMenuAnchor = remember { mutableStateOf(Rect.Zero) }
+    val menuHostOrigin = remember { mutableStateOf(Offset.Zero) }
+    val ledgerMenuFraction = remember { Animatable(0f) }
     var pendingDelete by remember { mutableStateOf<Transaction?>(null) }
     var editTx by remember { mutableStateOf<Transaction?>(null) }
     // 点行先看只读详情，编辑由详情里的按钮触发（避免手滑直接进编辑面板）
@@ -219,12 +244,9 @@ fun HomeScreen(
     var refundSource by remember { mutableStateOf<Transaction?>(null) }
     // 附件查看器：账单 + 从第几张开始看
     var viewingAttachments by remember { mutableStateOf<Pair<Transaction, Int>?>(null) }
-    var showBudgetDialog by remember { mutableStateOf(false) }
-    // 报销列筛选：仅看标记报销的账单
-    var reimburseOnly by remember { mutableStateOf(false) }
-    // 未对账筛选：仅看还没和银行 / 支付账单核对过的账单（对账页入口见账户详情 → 对账）
-    var unreconciledOnly by remember { mutableStateOf(false) }
-    // 多选模式
+    // 报销列筛选：仅看标记报销的账单（列表内容的一部分，随 Navigation 状态保存）
+    var reimburseOnly by rememberSaveable { mutableStateOf(false) }
+    // 多选模式（模态批量会话：切 tab 回来刻意不恢复，避免拿着过期选中集误批量操作）
     var multiSelectMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<Long>() }
     // 批量操作的二次确认 / 分类选择
@@ -242,22 +264,19 @@ fun HomeScreen(
             DayCollapseStore.load(context).forEach { put(it, false) }
         }
     }
-    // 当前滑出操作区的账单卡片（点击账单以外区域时回弹复位）
-    var openedCardId by remember { mutableStateOf<Long?>(null) }
+    // 当前滑出操作区的账单卡片（点击账单以外区域时回弹复位）；随页面状态保存，切 tab 回来不收起
+    var openedCardId by rememberSaveable { mutableStateOf<Long?>(null) }
     // 点击「编辑/复制/删除」胶囊按钮时置位，阻止容器级 detectTapGestures 把已开卡片回弹关闭
     val suppressCardClose = remember { mutableStateOf(false) }
 
     // ── 退款溯源 ──
     // 用**全量**账单而非本月汇总：退款可能落在别的月份，原账单也可能不在本月，
-    // 只看本月会让跨月退款的关联凭空消失。
+    // 只看本月会让跨月退款的关联凭空消失。索引由 ViewModel 在 Default 线程算一次。
     val allTx by viewModel.transactions.collectAsStateWithLifecycle()
-    val txById = remember(allTx) { allTx.associateBy { it.id } }
+    val refundView by viewModel.refundView.collectAsStateWithLifecycle()
+    val txById = refundView.byId
     /** 原账单 id → 已退金额（分，正数，可能由多笔退款累加） */
-    val refundedBySource = remember(allTx) {
-        allTx.filter { it.refundOfId != 0L }
-            .groupBy { it.refundOfId }
-            .mapValues { (_, list) -> list.sumOf { kotlin.math.abs(it.amountCents) } }
-    }
+    val refundedBySource = refundView.refundedBySource
 
     /** 账单行下方的退款说明；无关账单为空串 */
     fun refundNoteOf(tx: Transaction): String = when {
@@ -299,12 +318,10 @@ fun HomeScreen(
                 }
         }
     }
-    val filteredDays = remember(scopeDays, filter, reimburseOnly, unreconciledOnly) {
+    val filteredDays = remember(scopeDays, filter, reimburseOnly) {
         scopeDays.mapNotNull { day ->
             val matched = day.transactions.filter { tx ->
-                tx.matchesFilter(filter) &&
-                    (!reimburseOnly || tx.reimburse) &&
-                    (!unreconciledOnly || !tx.reconciled)
+                tx.matchesFilter(filter) && (!reimburseOnly || tx.reimburse)
             }
             if (matched.isEmpty()) {
                 null
@@ -321,40 +338,36 @@ fun HomeScreen(
         }
     }
 
-    // ── 概览派生数据 ──
-    // 日均：本月支出 / 当月天数
-    val dailyAvg = remember(expenseCents, month) { expenseCents / month.lengthOfMonth() }
-    // 环比：上月全月支出 vs 本月；上月为 0 时不显示（否则是 +∞%）
-    val momSuffix = remember(expenseCents, month, allTx) {
-        val prevMonth = month.minusMonths(1)
-        val prevExpense = allTx
-            .filter {
-                it.type == TransactionType.EXPENSE && !it.excludeFromStats &&
-                    java.time.YearMonth.from(it.date) == prevMonth
-            }
-            .sumOf { it.amountCents }
-        if (prevExpense <= 0L) {
-            ""
+    // ── 概览派生数据（预算行）──
+    // 卡片的预算数值（剩余 / 进度）始终基于「当前周期」，因此日均预算 / 今日剩余
+    // 只在浏览当前月时展示，翻历史月份不给错位数据。
+    val isCurrentMonth = month == java.time.YearMonth.now()
+    // 日均预算 = **剩余预算 ÷ 剩余天数**（动态日均）：花得多，后面每天能用的就变少。
+    // 剩余预算与卡片「预算剩余」同一数据源（含结转，超支为负）；剩余天数**含今天**——
+    // 「今日剩余 = 日均 − 今日支出」里的今天也在日均口径里，两边才闭合。
+    // 超支时剩余为负，日均钳到 0（红卡 + 已超支已经表达状态，不再显示负数日均）。
+    val dailyBudgetCents = if (isCurrentMonth) {
+        val remainingCents = monthBudgetProgress?.remainingCents
+            ?: (currentBudget - budgetExpenseCents).takeIf { currentBudget > 0L }
+        val remainingDays = month.lengthOfMonth() - LocalDate.now().dayOfMonth + 1
+        if (remainingCents != null && remainingCents > 0L && remainingDays > 0) {
+            remainingCents / remainingDays
         } else {
-            val pct = ((expenseCents - prevExpense) * 100 / prevExpense).toInt()
-            " · 环比 ${if (pct >= 0) "+" else ""}$pct%"
+            0L
         }
+    } else {
+        0L
     }
-    // 最近一笔：筛选生效时列表里看不到它，不做假锚点
-    val latestLabel = remember(allTx, filter.isActive) {
-        if (filter.isActive) {
-            null
-        } else {
-            allTx.maxByOrNull { it.id }?.let { latest ->
-                val day = when (latest.date) {
-                    LocalDate.now() -> "今天"
-                    LocalDate.now().minusDays(1) -> "昨天"
-                    else -> "${latest.date.monthValue}/${latest.date.dayOfMonth}"
-                }
-                "$day · ${CategoryCatalog.of(latest.categoryId).name} · ${formatMoney(latest.amountCents)}"
-            }
-        }
+    // 今日支出（与预算同一口径：剔除「不计入预算」）。今天必在本月汇总里，
+    // 不必再扫一遍全量账单；浏览历史月份时 dailyBudgetCents 为 0，此处取 0 即可。
+    val todayExpenseCents = remember(days) {
+        val today = LocalDate.now()
+        days.firstOrNull { it.date == today }?.transactions
+            ?.filter { it.type == TransactionType.EXPENSE && !it.excludeFromBudget }
+            ?.sumOf { it.amountCents } ?: 0L
     }
+    // 今日剩余 = 日均预算 − 今日支出；可为负（今日已超）
+    val todayRemainingCents = if (dailyBudgetCents > 0L) dailyBudgetCents - todayExpenseCents else null
 
     // ── 多选派生数据 ──
     // 用 allTx 而不是当前筛选结果：筛选条件变化不该让已选中的账单"凭空消失"
@@ -386,11 +399,14 @@ fun HomeScreen(
     val listState = rememberLazyListState()
     val topBarSurface = MaterialTheme.colorScheme.background
     val topBarBackdrop = rememberLayerBackdrop { drawRect(topBarSurface); drawContent() }
-    // 顶栏采样层节流（底栏 recordKey 优化 + mustRecord 模式）：
-    // recordKey 非 null + mustRecord 读 isScrollInProgress → 只在滚动中重录，静止不录、
-    // 不重采、不重跑顶栏模糊 shader，消除"长距离滚动卡顿"。mustRecord lambda 必须
-    // remember 稳定，否则每次重组 update→markNeedsRecord 退化成每帧录。
-    val topBarMustRecord = remember(listState) { { listState.isScrollInProgress } }
+    // 顶栏采样层节流：滚动中隔帧重录 + 停帧补录（BackdropRecordGate）。滚动帧整屏
+    // 重录（LazyColumn 全屏 GPU 层）是首页滑动最重的单项开销之一，玻璃模糊半帧率
+    // 刷新肉眼无感，成本减半；isScrollInProgress true→false 的写入会 invalidate
+    // 订阅它的 draw（mustRecord 在 draw 期读），天然产生停帧补录的那次咨询。
+    // mustRecord lambda 必须 remember 稳定，否则每次重组 update→markNeedsRecord
+    // 退化成每帧录。
+    val topBarRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val topBarMustRecord = remember(listState) { { topBarRecordGate.shouldRecord(listState.isScrollInProgress) } }
     // 采样层只在列表已滚动时才挂：未滚动时横栏下方就是页面底色，没有可模糊的内容，
     // 此时不挂可省掉每帧一次全屏录制（Miuix 的 layerBackdrop 无 recordKey 门控）。
     val listScrolled by remember {
@@ -400,25 +416,47 @@ fun HomeScreen(
     }
     val scrollBehavior = rememberTopBarScrollBehavior()
 
-    // 切月 / 切账本回到顶部：否则会停在新列表的中段
-    LaunchedEffect(month, ledger) { listState.scrollToItem(0) }
+    // 分页：按天渐进加载。SQL 已按月取数，这一层是给「全部时间」兜住几百天的渲染量；
+    // 用 saveable 保存，tab 切走再回来不丢分页深度。
+    var visibleDays by rememberSaveable { mutableStateOf(DAYS_PER_PAGE) }
+
+    // 列表内容标识：month / ledger / 筛选 / 报销任一变化 = 展示的是新一批数据，
+    // 查看位置回顶、顶栏展开复位、分页收回首页天数。
+    //
+    // ⚠️ 这是「切 tab 回来就置顶」bug 的根修点：LaunchedEffect 在**每次进入组合**时都会执行
+    // （键没变也拦不住），而 tab 切走再回来是全新组合——无条件 scrollToItem(0) 会把
+    // 刚恢复的滚动位置打到顶部。所以复位只认「内容标识真的变了」：标识与滚动位置、
+    // 分页深度一样走 Navigation 状态保存，切页往返、进程重建后两边对得上，不会误触发。
+    val contentKey = "$month|$ledger|$filter|$reimburseOnly"
+    var consumedContentKey by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(contentKey) {
+        if (contentKey != consumedContentKey) {
+            scrollBehavior.state.heightOffset = 0f
+            listState.scrollToItem(0)
+            visibleDays = DAYS_PER_PAGE
+            consumedContentKey = contentKey
+        }
+    }
 
     // 搜索框是插在列表头部的 item（key = "search"）。列表带着滚动位置打开时，LazyColumn
     // 会锚住原第一项、把搜索框排进顶栏下方的让位区 —— 视觉上就是「搜索框卡在顶栏阴影底部、
     // 只露出一条」。打开瞬间（含筛选弹窗应用后框自动展开）先复位到列表顶部，并把顶栏折叠
     // 偏移归零（scrollToItem 是直接重排、不走嵌套滚动派发，不会自己把大标题展开回来），
     // 让搜索框稳定落在展开态顶栏的正下方。
+    // 同样的回页重跑问题：带着已展开的搜索框（激活的筛选）切 tab 回来不该再复位——
+    // saveable 消费标记只认「这次组合里 searchVisible 从无到有」。
     val searchVisible = searchOpen || filter.isActive
+    var searchResetConsumed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(searchVisible) {
-        if (searchVisible) {
+        if (searchVisible && !searchResetConsumed) {
             scrollBehavior.state.heightOffset = 0f
             listState.scrollToItem(0)
+            searchResetConsumed = true
+        } else if (!searchVisible) {
+            searchResetConsumed = false
         }
     }
 
-    // 分页：按天渐进加载。SQL 已按月取数，这一层是给「全部时间」兜住几百天的渲染量
-    var visibleDays by remember { mutableStateOf(DAYS_PER_PAGE) }
-    LaunchedEffect(filter, reimburseOnly, unreconciledOnly) { visibleDays = DAYS_PER_PAGE }
     val pagedDays = remember(filteredDays, visibleDays) { filteredDays.take(visibleDays) }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -432,7 +470,7 @@ fun HomeScreen(
             .background(MaterialTheme.colorScheme.background)
             .topBarContentInset(scrollBehavior)
             .nestedScroll(scrollBehavior.nestedScrollConnection)
-            .then(if (listScrolled) Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord) else Modifier)
+            .then(if (listScrolled) Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord, recordHeight = ijiTopBarRecordHeight()) else Modifier)
             .onGloballyPositioned { listCoordinates = it }
             // 多选模式下的长按刷选（单击仍由卡片自己的手势切换选中）
             .pointerInput(Unit) {
@@ -511,16 +549,33 @@ fun HomeScreen(
                 // 范围切到「全部时间」后月份不参与过滤：翻月箭头置灰，避免点了没反应
                 monthRelevant = filter.scope == SearchScope.MONTH,
                 // 「报销列」并入月份行右侧：原来单独占一行，纵向空间太浪费
+                // 顶栏的「返回本月」也挪到这里，翻月后才出现，与筛选胶囊并排同高
                 trailing = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (month != java.time.YearMonth.now()) {
+                            Row(
+                                modifier = Modifier
+                                    .heightIn(min = 44.dp)
+                                    .clip(CircleShape)
+                                    .background(AppleSecondaryBackground)
+                                    .clickable { viewModel.backToThisMonth() }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    MiuixIcons.ChevronBackward,
+                                    contentDescription = null,
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("返回本月", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
                         ReimburseChip(
                             active = reimburseOnly,
                             onClick = { reimburseOnly = !reimburseOnly },
-                        )
-                        ReimburseChip(
-                            label = "未对账",
-                            active = unreconciledOnly,
-                            onClick = { unreconciledOnly = !unreconciledOnly },
                         )
                     }
                 },
@@ -528,16 +583,13 @@ fun HomeScreen(
         }
         item(key = "summary") {
             SummaryCard4(
-                incomeCents = incomeCents,
                 expenseCents = expenseCents,
+                incomeCents = incomeCents,
                 budgetCents = currentBudget,
                 budgetExpenseCents = budgetExpenseCents,
                 budgetProgress = monthBudgetProgress,
-                dailyAvgCents = dailyAvg,
-                momSuffix = momSuffix,
-                latestLabel = latestLabel,
-                onEditBudget = { showBudgetDialog = true },
-                onOpenBudgetDetail = onNavigateBudgetDetail,
+                dailyBudgetCents = dailyBudgetCents,
+                todayRemainingCents = todayRemainingCents,
             )
         }
 
@@ -576,24 +628,21 @@ fun HomeScreen(
         } else if (txError == null && filteredDays.isEmpty()) {
             item(key = "empty") {
                 BillsEmptyState(
-                    // 「报销列 / 未对账」也是过滤条件：否则清空列表却说「本月还没有账单」
+                    // 「报销列」也是过滤条件：否则清空列表却说「本月还没有账单」
                     kind = when {
-                        filter.isActive || reimburseOnly || unreconciledOnly -> EmptyKind.FILTERED
+                        filter.isActive || reimburseOnly -> EmptyKind.FILTERED
                         allTx.isEmpty() -> EmptyKind.NO_BILL_AT_ALL
                         else -> EmptyKind.NO_BILL_THIS_MONTH
                     },
                     filterSummary = listOfNotNull(
                         filter.summary().takeIf { it.isNotBlank() },
                         "报销列".takeIf { reimburseOnly },
-                        "未对账".takeIf { unreconciledOnly },
                     ).joinToString(" · "),
-                    onAddBill = onAddBill,
                     // 「清除筛选」要把快捷开关也复位，否则点了还是空
                     onClearFilter = {
                         queryText = ""
                         filter = SearchFilter()
                         reimburseOnly = false
-                        unreconciledOnly = false
                     },
                     onPrevMonth = { viewModel.prevMonth() },
                 )
@@ -729,87 +778,114 @@ fun HomeScreen(
             // 账本名默认 32sp 太重，压到 20sp（收起态小标题按 0.85 倍同步走）
             largeTitleFontSize = 20.sp,
             scrollBehavior = scrollBehavior,
-            startAction = { _, _ ->
-                // 账本切换下拉（统一走 AnchoredIconDropdownMenu；触发器在左缘，故左对齐）
-                AnchoredIconDropdownMenu(
-                    expanded = ledgerMenuOpen,
-                    onDismissRequest = { ledgerMenuOpen = false },
-                    alignment = PopupPositionProvider.Align.Start,
-                    modifier = Modifier.size(40.dp),
-                    // 每次重组直接构建（不缓存）：保证 onClick 捕获最新 ledger 状态
-                    items = viewModel.ledgers.map { name ->
-                        val currency = Currency.of(
-                            viewModel.ledgerInfos.firstOrNull { it.name == name }?.currency,
-                        )
-                        DropdownItem(
-                            text = name,
-                            // 只有「币种和当前账本不同」才标注：同币种时多一行符号只是噪音
-                            summary = "${currency.symbol} ${currency.code}"
-                                .takeIf { currency != CurrencyDisplay.current },
-                            selected = name == ledger,
-                            onClick = { viewModel.switchLedger(name) },
-                        )
-                    } + DropdownItem(
-                        text = "账本管理…",
-                        // 用副标题做视觉分隔：Miuix 的 DropdownItem 不支持在条目之间插分隔线，
-                        // 副标题使该行比纯账本项更高一行，读起来自然区分
-                        summary = "新建 / 改名 / 删除",
-                        onClick = {
-                            ledgerMenuOpen = false
-                            onNavigateLedgerManage()
-                        },
-                    ),
-                ) {
-                    CircleActionButton(
-                        // 与搜索框旁的「筛选」区分开：账本切换用列表图标
-                        icon = MiuixIcons.ListView,
-                        desc = "切换账本",
-                        onClick = { ledgerMenuOpen = true },
-                    )
-                }
+            startAction = { backdropAlpha, shadowAlpha ->
+                // 账本切换下拉（NexioSchedule LiquidGlassDropdownMenu；触发器在左缘，面板左对齐）。
+                // 占位槽只负责定位与点击，玻璃圆钮与面板由页面根的 overlay 层绘制（不占顶栏布局）。
+                // 收起态玻璃圆钮 = 本组件（采样 topBarBackdrop，页面内无自捕获先例）；
+                // 面板展开时在 popup 层从本占位位置长出（onGloballyPositioned 只做定位上报）
+                LiquidTopBarButton(
+                    // 账本切换用「本子」图标：Notes 语义就是账本，与搜索/我的同尺寸（Action 22dp）
+                    icon = MiuixIcons.Notes,
+                    contentDescription = "切换账本",
+                    iconSize = com.iji.app.ui.theme.IjiIconSize.Action,
+                    onClick = { ledgerMenuOpen = true },
+                    backdrop = topBarBackdrop,
+                    backdropAlpha = backdropAlpha,
+                    shadowAlpha = shadowAlpha,
+                    iconModifier = Modifier.graphicsLayer {
+                        // 一镜到底（NexioSchedule）：面板从本钮长出，图标随 fraction 向面板
+                        // 内部（右下）漂移并提前淡完（k=2.5）；收起以更小系数更早浮现（k=1.7）
+                        val iconK = if (ledgerMenuOpen) 2.5f else 1.7f
+                        val p = (ledgerMenuFraction.value * iconK).coerceIn(0f, 1f)
+                        alpha = 1f - p
+                        translationX = p * 10.dp.toPx()
+                        translationY = p * 10.dp.toPx()
+                    },
+                    modifier = Modifier.onGloballyPositioned { ledgerMenuAnchor.value = it.boundsInWindow() },
+                )
             },
             onMineClick = onNavigateMine,
-            endAction = { _, _ ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 搜索从常驻一行改为顶栏入口：点开才占列表空间。
-                    // 有条件生效时不能收起（摘要行要一直在），此时入口只负责聚焦
-                    val canCollapse = searchOpen && !filter.isActive && queryText.isBlank()
-                    CircleActionButton(
-                        icon = MiuixIcons.Search,
-                        desc = if (canCollapse) "收起搜索" else "搜索",
-                        onClick = {
-                            if (canCollapse) {
-                                searchOpen = false
-                                focusManager.clearFocus()
-                            } else {
-                                searchOpen = true
-                                runCatching { searchFocus.requestFocus() }
-                            }
-                        },
-                    )
-                    if (month != java.time.YearMonth.now()) {
-                        Spacer(Modifier.width(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(AppleSecondaryBackground)
-                                .clickable { viewModel.backToThisMonth() }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                MiuixIcons.ChevronBackward,
-                                contentDescription = null,
-                                tint = TextSecondary,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("返回本月", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            endAction = { backdropAlpha, shadowAlpha ->
+                // 搜索从常驻一行改为顶栏入口：点开才占列表空间。
+                // 有条件生效时不能收起（摘要行要一直在），此时入口只负责聚焦
+                val canCollapse = searchOpen && !filter.isActive && queryText.isBlank()
+                LiquidTopBarButton(
+                    icon = MiuixIcons.Search,
+                    contentDescription = if (canCollapse) "收起搜索" else "搜索",
+                    onClick = {
+                        if (canCollapse) {
+                            searchOpen = false
+                            focusManager.clearFocus()
+                        } else {
+                            searchOpen = true
+                            runCatching { searchFocus.requestFocus() }
                         }
-                    }
-                }
+                    },
+                    backdrop = topBarBackdrop,
+                    backdropAlpha = backdropAlpha,
+                    shadowAlpha = shadowAlpha,
+                )
             },
         )
+
+        // 账本切换下拉 overlay（NexioSchedule LiquidGlassDropdownMenu）：面板长在全屏覆盖层，
+        // graphicsLayer 平移到顶栏圆钮位置（控件自带 24dp 阴影内缩，对齐 44dp 占位中心）。
+        // 放在 IjiTopBar 之后：面板展开时盖过顶栏其余部分，与上游 chrome 层叠放一致。
+        val ledgerBackdrop = LocalAppBackdrop.current
+        if (ledgerBackdrop != null) {
+            // 宿主必须是 popup 层（LiquidGlassDropdownOverlayHost，内走 Miuix DialogLayout）：
+            // 放 NavHost 内会自捕获（drawBackdrop 节点被 layerBackdrop 录进采样图）
+            // → RenderNode 递归 SIGSEGV
+            LiquidGlassDropdownOverlayHost(expanded = ledgerMenuOpen, onOutsideTap = { ledgerMenuOpen = false }) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { menuHostOrigin.value = it.positionInWindow() },
+                ) {
+                    LiquidGlassDropdownMenu(
+                        show = ledgerMenuOpen,
+                        backdrop = ledgerBackdrop,
+                        fraction = ledgerMenuFraction,
+                        onDismiss = { ledgerMenuOpen = false },
+                        // 三颗按钮字形必须同尺寸（Action 22dp），Notes 语义就是账本
+                        panelAlignStart = true,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                // 覆盖式（Start）：控制盒左上角 = 锚点左上角 − 26dp
+                                //（玻璃左缘 = 锚左 − 2dp、顶 = 锚顶 − 2dp）——面板从账本圆钮
+                                // 位置向右下生长覆盖触发器，收起缩回圆钮与图标衔接。
+                                // 锚点用窗口坐标 − 宿主原点（popup 层与页面坐标系可能差状态栏高度）
+                                val b = ledgerMenuAnchor.value
+                                translationX = b.left - 26.dp.toPx() - menuHostOrigin.value.x
+                                translationY = b.top - 26.dp.toPx() - menuHostOrigin.value.y
+                            },
+                    ) {
+                        viewModel.ledgers.forEach { name ->
+                            val currency = Currency.of(
+                                viewModel.ledgerInfos.firstOrNull { it.name == name }?.currency,
+                            )
+                            LiquidGlassDropdownMenuItem(
+                                text = name +
+                                    ("　${currency.symbol} ${currency.code}"
+                                        .takeIf { currency != CurrencyDisplay.current } ?: ""),
+                                selected = name == ledger,
+                                onClick = {
+                                    ledgerMenuOpen = false
+                                    viewModel.switchLedger(name)
+                                },
+                            )
+                        }
+                        LiquidGlassDropdownMenuItem(
+                            text = "账本管理…",
+                            onClick = {
+                                ledgerMenuOpen = false
+                                onNavigateLedgerManage()
+                            },
+                        )
+                    }
+                }
+            }
+        }
 
         // 多选操作栏：与列表同级（根 Box 内）固定贴底，让出悬浮 tab 栏的高度 —— 既不随列表滚动，
         // 也不会和底部导航叠在一起（旧实现放在根 Box 之外，会把内容区挤成空白）。
@@ -927,32 +1003,6 @@ fun HomeScreen(
         // 预览基于全量流水：条件怎么改都能立刻知道会剩几笔
         previewCount = { candidate -> allTx.count { it.matchesFilter(candidate) } },
     )
-
-    // 预算编辑弹窗（预算值已在屏幕级收集）
-    var budgetInput by remember(showBudgetDialog) {
-        mutableStateOf((currentBudget / 100.0).toString())
-    }
-    val budgetFocus = remember { FocusRequester() }
-    IjiDialog(
-        show = showBudgetDialog,
-        onDismissRequest = { showBudgetDialog = false },
-        title = "设置月度预算",
-        confirmText = "保存",
-        autoFocusRequester = budgetFocus,
-        onConfirm = {
-            val cents = (budgetInput.toDoubleOrNull() ?: 0.0).let { (it * 100).toLong() }
-            viewModel.setMonthlyBudget(cents)
-            showBudgetDialog = false
-        },
-    ) {
-        top.yukonga.miuix.kmp.basic.TextField(
-            budgetInput,
-            { input ->
-                if (input.length <= 10) budgetInput = input.filter { it.isDigit() || it == '.' }
-            },
-            Modifier.fillMaxWidth().focusRequester(budgetFocus),
-        )
-    }
 
     // 删除确认弹窗
     IjiDialog(
@@ -1234,7 +1284,6 @@ private enum class EmptyKind { NO_BILL_AT_ALL, NO_BILL_THIS_MONTH, FILTERED }
 private fun BillsEmptyState(
     kind: EmptyKind,
     filterSummary: String,
-    onAddBill: () -> Unit,
     onClearFilter: () -> Unit,
     onPrevMonth: () -> Unit,
 ) {
@@ -1245,7 +1294,7 @@ private fun BillsEmptyState(
     }
     val desc = when (kind) {
         EmptyKind.NO_BILL_AT_ALL -> "记下第一笔，之后每月收支会自动汇总在这里"
-        EmptyKind.NO_BILL_THIS_MONTH -> "可以查看上个月，或现在补一笔"
+        EmptyKind.NO_BILL_THIS_MONTH -> "可以查看上个月"
         EmptyKind.FILTERED -> filterSummary.ifBlank { "当前筛选条件下没有账单" }
     }
     Column(
@@ -1280,25 +1329,31 @@ private fun BillsEmptyState(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (kind == EmptyKind.NO_BILL_THIS_MONTH) {
-                top.yukonga.miuix.kmp.basic.TextButton(
-                    text = "查看上月",
-                    onClick = onPrevMonth,
-                    cornerRadius = Radius.xxl,
-                )
-            }
-            top.yukonga.miuix.kmp.basic.Button(
-                onClick = if (kind == EmptyKind.FILTERED) onClearFilter else onAddBill,
-                cornerRadius = Radius.xxl,
-                colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.buttonColorsPrimary(),
-            ) {
-                Text(
-                    if (kind == EmptyKind.FILTERED) "清除筛选" else "记一笔",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
+        // 「记一笔」由底部全局悬浮按钮承担，空态不再重复放入口；只有「查看上月」
+        // 「清除筛选」这两个真实出口才渲染按钮行，否则会留一块没有按钮的空白。
+        if (kind != EmptyKind.NO_BILL_AT_ALL) {
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (kind == EmptyKind.NO_BILL_THIS_MONTH) {
+                    top.yukonga.miuix.kmp.basic.TextButton(
+                        text = "查看上月",
+                        onClick = onPrevMonth,
+                        cornerRadius = Radius.xxl,
+                    )
+                }
+                if (kind == EmptyKind.FILTERED) {
+                    top.yukonga.miuix.kmp.basic.Button(
+                        onClick = onClearFilter,
+                        cornerRadius = Radius.xxl,
+                        colors = ijiPrimaryButtonColors(),
+                    ) {
+                        Text(
+                            "清除筛选",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
             }
         }
     }
@@ -1393,12 +1448,11 @@ private fun MonthSelector(
     }
 }
 
-/** 月份行右侧的筛选胶囊：字重与月份行统一（Medium），只靠底色/字色表达选中 */
+/** 月份行右侧的「报销列」筛选胶囊：字重与月份行统一，只靠底色/字色表达选中 */
 @Composable
 private fun ReimburseChip(
     active: Boolean,
     onClick: () -> Unit,
-    label: String = "报销列",
 ) {
     val shape = RoundedCornerShape(Radius.xl)
     Box(
@@ -1415,7 +1469,7 @@ private fun ReimburseChip(
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            if (active) "✓ $label" else label,
+            if (active) "✓ 报销列" else "报销列",
             style = MaterialTheme.typography.bodySmall,
             color = if (active) MiuixPrimary else TextSecondary,
             fontWeight = FontWeight.Medium,
@@ -1424,30 +1478,29 @@ private fun ReimburseChip(
 }
 
 /**
- * 本月概览：主行「支出 + 预算剩余」，次行「收入 · 结余」，中间是预算进度条。
- * 四宫格改成两级后，首屏省下约一行账单高度，且「还能花多少」一眼可见。
+ * 本月概览大卡：**实色状态卡**——卡底即预算状态（正常=主色蓝 / 已超支=红），内容全白。
+ *
+ * 此前「白卡 + 状态色微染」试过平涂与渐变两版，都发闷：染色上红（支出）蓝（剩余）
+ * 两个大数字互相打架，进度条轨道也发灰。实色卡是记账类概览的常规做法：
+ * 状态一眼可辨，也彻底解决「与近白页面底色融为一体」。
+ * 纯信息卡不带操作入口——预算的增改统一在「预算」页（那里有完整的编辑弹窗）。
+ * 卡片只回答四个问题：本月收支（支出/收入并排）、还能花多少、每天可用多少、今天还能花多少。
  */
 @Composable
 private fun SummaryCard4(
-    incomeCents: Long,
     expenseCents: Long,
+    /** 当前月总收入（分），与 [expenseCents] 同口径（已剔除「不计入收支」） */
+    incomeCents: Long = 0L,
     budgetCents: Long,
     budgetExpenseCents: Long = expenseCents,
-    /** 真实的预算进度（与预算页/详情页同一份数据）；为空时回退旧的内存算法 */
+    /** 真实的预算进度（与预算页同一份数据）；为空时回退旧的内存算法 */
     budgetProgress: BudgetProgress? = null,
-    /** 日均支出（分）；0 时不显示 */
-    dailyAvgCents: Long = 0L,
-    /** 环比后缀，如「 · 环比 +12%」；上月无数据时为空串 */
-    momSuffix: String = "",
-    /** 「最近一笔」摘要；筛选生效时传 null（列表里看不到它，别给假锚点） */
-    latestLabel: String? = null,
-    onEditBudget: () -> Unit = {},
-    onOpenBudgetDetail: (Long) -> Unit = {},
+    /** 日均预算（分）= 剩余预算 ÷ 剩余天数（含今天）；0 表示未设置预算或已超支 */
+    dailyBudgetCents: Long = 0L,
+    /** 今日剩余可花（分）= 日均预算 − 今日支出；可为负（今日已超） */
+    todayRemainingCents: Long? = null,
 ) {
-    val netCents = incomeCents - expenseCents
-    val netColor = if (netCents >= 0) IncomeGreen else MaterialTheme.colorScheme.onSurface
-
-    // 预算相关数值一律由 BudgetProgress 驱动，保证与预算页、详情页一致；
+    // 预算相关数值一律由 BudgetProgress 驱动，保证与预算页一致；
     // 只有「尚未持久化预算」的过渡场景才回退到旧的内存算法。
     val bp = budgetProgress
     val remainingBudget = when {
@@ -1455,55 +1508,49 @@ private fun SummaryCard4(
         budgetCents > 0L -> budgetCents - budgetExpenseCents
         else -> null
     }
-    val remainingColor = when {
-        remainingBudget == null -> TextSecondary
-        remainingBudget < 0 -> MaterialTheme.colorScheme.onSurface
-        else -> MiuixPrimary
-    }
     val percent = bp?.percent
         ?: if (budgetCents > 0L) ((budgetExpenseCents * 100) / budgetCents).toInt() else 0
     val overBudget = bp?.let { it.percent >= 100 }
         ?: (budgetCents > 0L && budgetExpenseCents > budgetCents)
 
-    // 已有真实预算 → 点卡片进详情页；还没有 → 维持旧行为（点卡片直接改预算），
-    // 避免"无预算时跳到空详情页"的死路。
-    val budgetId = bp?.budget?.id ?: 0L
-    val cardClickModifier =
-        if (budgetId > 0L) Modifier.clickable { onOpenBudgetDetail(budgetId) }
-        else Modifier.clickable { onEditBudget() }
+    // 卡底=状态色：正常/未设置=主色蓝，已超支=红。「接近超支」不改卡底（琥珀上白字
+    // 对比度不够），由进度条填充与「已用」文字变琥珀表达。
+    val cardColor = if (overBudget) AppleRed else MiuixPrimary
+    // 卡上内容统一白色系（标签 72% / 正文 100%），单一色调讲完整个卡片
+    val onCardLabel = Color.White.copy(alpha = 0.72f)
+    val onCardValue = Color.White
+    // 进度条填充：接近超支时变琥珀（蓝色卡上可辨），其余白色；轨道恒白 25%
+    val progressFill = if (bp?.level == BudgetAlertLevel.NEAR_LIMIT && !overBudget) {
+        NearLimitColor
+    } else {
+        Color.White
+    }
 
     top.yukonga.miuix.kmp.basic.Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = LocalDimens.current.screenPadding, vertical = 8.dp)
-            .then(cardClickModifier)
-            .border(
-                1.dp,
-                MiuixPrimary.copy(alpha = 0.22f),
-                RoundedCornerShape(Radius.sheet),
-            ),
+            .padding(horizontal = LocalDimens.current.screenPadding, vertical = 8.dp),
         cornerRadius = Radius.sheet,
-        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(MiuixPrimary.copy(alpha = 0.07f)),
+        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(cardColor),
     ) {
-        // 系统字号放大后 26sp 会撑爆半屏宽：超过 1.3 倍自动降一档
-        val amountSize = if (LocalDensity.current.fontScale > 1.3f) 20.sp else 26.sp
+        // 两个金额并排，字号比原先单个英雄数字小一档；系统字号放大后再降一档
+        val amountSize = if (LocalDensity.current.fontScale > 1.3f) 14.sp else 18.sp
 
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            // 主行：支出 + 预算剩余 —— 账本页要回答的是「这个月还能花多少」
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+            // 主行：本月收支（支出/收入）+ 预算剩余 —— 账本页要回答的是「进出多少、还能花多少」
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "本月支出",
+                        "本月收支",
                         style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = onCardLabel,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        formatMoney(expenseCents),
+                        "${formatMoney(expenseCents)}/${formatMoney(incomeCents)}",
                         fontSize = amountSize,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = onCardValue,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1513,7 +1560,7 @@ private fun SummaryCard4(
                         // 超支时换标签：状态不只靠颜色传达
                         if (remainingBudget != null && remainingBudget < 0L) "已超支" else "预算剩余",
                         style = MaterialTheme.typography.bodySmall,
-                        color = remainingColor.copy(alpha = 0.75f),
+                        color = onCardLabel,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
@@ -1524,66 +1571,101 @@ private fun SummaryCard4(
                         },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = remainingColor,
+                        color = if (remainingBudget == null) Color.White.copy(alpha = 0.6f) else onCardValue,
                         maxLines = 1,
                     )
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(20.dp))
             when {
                 bp != null && bp.amountCents > 0L -> {
-                    BudgetProgressBar(progress = bp, height = 4.dp)
-                    Spacer(Modifier.height(6.dp))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (overBudget) {
-                                "⚠ 已超支 ${formatMoney(-bp.remainingCents)}$momSuffix"
-                            } else {
-                                "已用 $percent%$momSuffix"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (overBudget) MaterialTheme.colorScheme.onSurface else TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                    // 百分比贴进度条右侧：条按剩余宽度缩短，省掉原来单独占的一行
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BudgetProgressBar(
+                            progress = bp,
                             modifier = Modifier.weight(1f),
+                            height = 6.dp,
+                            trackColor = Color.White.copy(alpha = 0.25f),
+                            fillColor = progressFill,
                         )
-                        // 卡片整体点击进详情；这里保留直接改预算的入口（内层按钮会消费点击）
-                        IjiTextAction(text = "改预算", onClick = onEditBudget, compact = true)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "${if (overBudget) "超支" else "已用"} $percent%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (bp.level == BudgetAlertLevel.NEAR_LIMIT && !overBudget) {
+                                NearLimitColor
+                            } else {
+                                Color.White.copy(alpha = 0.85f)
+                            },
+                            maxLines = 1,
+                        )
                     }
                 }
                 budgetCents > 0L -> {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("已用 $percent%", style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
-                        IjiTextAction(text = "改预算", onClick = onEditBudget, compact = true)
-                    }
+                    Text(
+                        "已用 $percent%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.85f),
+                    )
                 }
                 else -> {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("还没设置本月预算", style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
-                        IjiTextAction(text = "设置预算", onClick = onEditBudget, compact = true)
-                    }
+                    Text(
+                        "还没设置本月预算，可在「预算」页设置",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.85f),
+                    )
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            // 次行：收入 / 结余 / 日均降级为一行小字，不再与支出平级争视觉重心
-            Text(
-                "收入 ${formatMoney(incomeCents)} · 结余 ${formatMoney(netCents)}" +
-                    if (dailyAvgCents > 0L) " · 日均 ${formatMoney(dailyAvgCents)}" else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = netColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            // 发丝线分隔：上方是「月度预算」区，下方是「日均 / 今日」区
+            Spacer(Modifier.height(14.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(0.5.dp)
+                    .background(Color.White.copy(alpha = 0.25f)),
             )
-            if (latestLabel != null) {
-                Spacer(Modifier.height(4.dp))
-                // 「最近一笔」锚点：冷启动不滚动也能确认最后记了什么
-                Text(
-                    "最近：$latestLabel",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            Spacer(Modifier.height(12.dp))
+            // 底行：日均预算 / 今日剩余 —— 「每天可用多少、今天还能花多少」
+            if (dailyBudgetCents > 0L) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "日均预算",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onCardLabel,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            formatMoney(dailyBudgetCents),
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = onCardValue,
+                            maxLines = 1,
+                        )
+                    }
+                    // 今日剩余只在浏览当前月时由调用方传入；缺省时只显示日均预算一列
+                    val todayLeft = todayRemainingCents
+                    if (todayLeft != null) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                // 超了换标签：状态不只靠颜色传达
+                                if (todayLeft < 0L) "今日已超" else "今日剩余",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = onCardLabel,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                formatMoney(kotlin.math.abs(todayLeft)),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = onCardValue,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(2.dp))
             }
         }
     }
@@ -1596,13 +1678,24 @@ private fun DayHeaderV2(day: DaySummary, expanded: Boolean, onToggle: () -> Unit
     // 否则日头相加≠汇总卡，用户会以为账算错了
     val dayIncome = day.incomeCents
     val dayExpense = day.expenseCents
+    // 折叠图标按右侧文字的行高给尺寸：居中后与文字等高、落在同一条中心线上，
+    // 字体缩放时一起变大，不会出现「图标比文字高半格」。
+    val rowStyle = MaterialTheme.typography.bodySmall
+    val iconSize = rowStyle.lineHeight.value.dp * LocalDensity.current.fontScale
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // 最小行高 + 上下对称 padding：收起时相邻两个日期头之间不会忽紧忽松
+            .heightIn(min = 32.dp)
             // 吸顶后必须有实底：否则下方账单会从日期文字间透出来
             .background(MaterialTheme.colorScheme.background)
-            .clickable { onToggle() }
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
+            // 折叠只切换显示，不要点击水波纹：整行闪一层灰条比折叠本身更抢眼
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onToggle,
+            )
+            .padding(horizontal = LocalDimens.current.screenPadding, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1615,20 +1708,21 @@ private fun DayHeaderV2(day: DaySummary, expanded: Boolean, onToggle: () -> Unit
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "${day.transactions.size} 笔",
-                style = MaterialTheme.typography.bodySmall,
+                style = rowStyle,
                 color = TextSecondary.copy(alpha = 0.7f),
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(6.dp))
             // 只显示当日实际发生的方向：两个「¥0.00」并列只是噪音
             if (dayIncome > 0L) {
-                Text("收 ${formatMoney(dayIncome)}", style = MaterialTheme.typography.bodySmall, color = IncomeGreen)
-                Spacer(Modifier.width(10.dp))
+                Text("收 ${formatMoney(dayIncome)}", style = rowStyle, color = IncomeGreen)
+                Spacer(Modifier.width(8.dp))
             }
             if (dayExpense > 0L) {
                 Text(
                     "支 ${formatMoney(dayExpense)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    style = rowStyle,
+                    // 全局约定：消费红色
+                    color = ExpenseAmount,
                 )
                 Spacer(Modifier.width(4.dp))
             }
@@ -1636,7 +1730,7 @@ private fun DayHeaderV2(day: DaySummary, expanded: Boolean, onToggle: () -> Unit
                 if (expanded) MiuixIcons.ExpandMore else MiuixIcons.ExpandLess,
                 contentDescription = null,
                 tint = TextSecondary,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(iconSize),
             )
         }
     }
@@ -1751,7 +1845,8 @@ private fun TransactionCard(
             }
             ActionPill("复制", IncomeGreen, onClick = { suppressCardClose.value = true; onCopy() }, modifier = Modifier.width(actionPillWidth))
             Spacer(Modifier.width(actionPillGap))
-            ActionPill("删除", MaterialTheme.colorScheme.onSurface, onClick = { suppressCardClose.value = true; onDelete() }, modifier = Modifier.width(actionPillWidth))
+            // 删除是破坏性操作：用全局约定的语义红，而不是行文字同色的深灰（与普通内容难区分）
+            ActionPill("删除", AppleRed, onClick = { suppressCardClose.value = true; onDelete() }, modifier = Modifier.width(actionPillWidth))
         }
 
         // 前景卡片
@@ -1824,8 +1919,9 @@ private fun TransactionCard(
                             if (change.changedToUp()) break
                         }
                         if (dragged) {
-                            // 松手：超过一半平滑吸附全开，否则平滑回弹归零（派发 settleTarget 走动画）
-                            val target = if (dragOffset.value < -maxSwipe / 2) -maxSwipe else 0f
+                            // 松手：滑过操作区 1/3 就吸附全开（阈值低一点，轻扫即开），
+                            // 否则平滑回弹归零（派发 settleTarget 走动画）
+                            val target = if (dragOffset.value < -maxSwipe / 3) -maxSwipe else 0f
                             settleTarget = target
                             onOpenChange(target != 0f)
                         } else if (!longPressed && abs(totalX) < tapSlop && abs(totalY) < tapSlop) {
@@ -1889,7 +1985,13 @@ private fun TransactionCard(
     }
 }
 
-/** 胶囊形操作按钮（滑出操作区使用） */
+/**
+ * 胶囊形操作按钮（滑出操作区使用）。
+ *
+ * 不再撑满行高（56 宽 × 全行高 ≈ 一个方块，视觉笨重）：固定 38dp 高、随行垂直居中，
+ * 是真正的胶囊比例。按压缩放反馈（0.9 回弹）替代默认涟漪——色块上涟漪发糊，
+ * 缩放手感与 app 其余可点元素（悬浮窗 pressableScale / 玻璃按钮）一致。
+ */
 @Composable
 private fun ActionPill(
     text: String,
@@ -1897,14 +1999,29 @@ private fun ActionPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.9f else 1f,
+        animationSpec = spring(stiffness = 600f, dampingRatio = Spring.DampingRatioNoBouncy),
+        label = "actionPillPress",
+    )
     Box(
         modifier = modifier
-            .fillMaxHeight()
+            .height(ActionPillHeight)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(Radius.pill))
             .background(color)
-            .clickable { onClick() },
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
     }
 }
+
+/** 操作胶囊的固定高度：窄于行高，让「圈」恢复成胶囊的比例 */
+private val ActionPillHeight = 38.dp

@@ -39,7 +39,9 @@ val AppSurfaceVariantDark = Color(0xFF2C2C2E)
 // 兼容旧代码
 val IjiRed = MiuixPrimary
 val IjiRedDark = MiuixPrimaryDark
-val ExpenseAmount = Color(0xFF1D1D1F)
+// 消费金额统一红色 / 收入统一绿色（全局约定）：金额展示处一律用这两个语义色，
+// 不要直接写 MiuixPrimary / onSurface，避免再出现「支出是蓝色」的不一致
+val ExpenseAmount = AppleRed
 val IncomeGreen = AppleGreen
 val TextSecondary = AppleSecondaryLabel
 val DividerGray = AppleSecondaryBackground

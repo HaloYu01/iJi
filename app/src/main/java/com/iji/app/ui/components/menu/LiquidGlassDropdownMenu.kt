@@ -1,0 +1,504 @@
+// 1:1 拷贝自 NexioSchedule ui-shared/.../basic/LiquidGlassDropdownMenu.kt（2026-11-07 master）。
+// 与上游的差异仅以下几处（均为本工程基建缺失/场景差异，行为保持一致）：
+// 1. 包名与 Text 来源（上游用自包装 material Text，本工程用 Miuix Text）；
+// 2. SoftGlass live-shader 材质基建（ui/glass/SoftGlass* + backdrop.runtimeShaderEffect）
+//    本工程不存在 → 所有档统一走上游的 fallback 分支（blur + lens(6,36) 折射 + 染色 +
+//    edgeLight），删除 fill/tone 参数与 LIVE shader 常量；本包兼容桩只映射 BEST / NONE，
+//    实际 blur 为 4dp 或 0（关闭），8→24 的展开渐变分支按上游结构保留但当前不可达；
+// 3. rememberDefaultEdgeLight(degradedBaseColor)：上游按材质档降级描边，本工程 edgeLight
+//    无参版本身已适配深浅色，语义等价；
+// 4. rememberNavigationBack：API 与上游一致，实现走本工程 PredictiveBackHandler 管线
+//    （根 dispatcher 孤立问题，见 NavigationBack.kt 头注）；
+// 5. 新增 panelAlignStart：上游 hardcode TopEnd（顶栏右上角场景），本工程有左上角锚定
+//    （账本圆钮）场景 → 面板对齐与锚点迁移方向参数化，几何公式对称。
+
+package com.iji.app.ui.components.menu
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick as onSemanticsClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.unit.sp
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
+import com.iji.app.ui.util.PredictiveBackSettings
+import com.iji.app.ui.util.isAppDarkTheme
+import com.iji.app.ui.effects.edgelight.edgeLight
+import com.iji.app.ui.effects.edgelight.rememberDefaultEdgeLight
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.capsule.ContinuousCapsule
+import com.kyant.capsule.ContinuousRoundedRectangle
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+/** 外层为阴影预留的内缩；外部按占位槽真实位置摆放本控件时需减掉它。跨模块须 public。 */
+val LiquidGlassDropdownShadowPadding = 24.dp
+
+/** 收起态圆形按钮直径，也是容器变换的起点尺寸 */
+private val ButtonDiameter = 42.dp
+
+/** 面板宽度与圆角 */
+private val PanelWidth = 200.dp
+private val PanelCornerRadius = 25.dp
+
+/** 面板外投射阴影档位。仅本文件的下拉面板使用，仓库内已无同值副本需要同步。 */
+private val ShadowColorLight = Color(0x1A000000)
+private val ShadowColorDark = Color(0x2E000000)
+private const val ShadowBlur = 12f
+private const val ShadowExtend = 2f
+/** 阴影 alpha 会被放大这么多倍 —— 环形路径重复描边会累积浓度 */
+private const val ShadowAlphaGain = 3.2f
+
+/**
+ * 「更多」按钮与下拉菜单是**同一个控件**（容器变换）：fraction=0 时是 42dp 玻璃盒
+ * （圆角 25dp 被钳成正圆），fraction=1 时长成 [PanelWidth] × 面板高的圆角矩形。已展开时支持
+ * 跟手滑动选菜单项（见 [dropdownPanelDragSelect]），无长按门槛。
+ *
+ * @param backdrop 页面采样层（本工程由 LocalAppBackdrop 提供；上游为顶栏直接持有）
+ */
+@Composable
+fun LiquidGlassDropdownMenu(
+    show: Boolean,
+    backdrop: Backdrop,
+    modifier: Modifier = Modifier,
+    fraction: Animatable<Float, *> = remember { Animatable(0f) },
+    onDismiss: (() -> Unit)? = null,
+    onBackProgress: ((Float) -> Unit)? = null,
+    onBackCancelled: (() -> Unit)? = null,
+    // 整块控件随顶栏一起平移（非当前页移出屏幕外）
+    offsetPx: () -> Offset = { Offset.Zero },
+    // 顶栏滚动材质透明度：收起态跟随它渐显渐隐，展开时按 fraction 渐显
+    materialAlpha: Float = 1f,
+    // 本工程适配：面板对齐侧。上游 hardcode TopEnd（顶栏右上角）；本工程左上角锚定
+    // （账本圆钮）传 true → 面板 TopStart 对齐、锚点迁移方向对称翻转
+    panelAlignStart: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val isLightTheme = !isAppDarkTheme()
+    // 与液态玻璃按钮同色（浅深各一档）：收起态即那颗按钮，形变过程中玻璃不突变
+    val containerColor = if (MiuixTheme.isDynamicColor) MiuixTheme.colorScheme.surfaceContainer
+        .copy(alpha = AppMaterialSettings.glassSurfaceAlpha(if (isLightTheme) 0.76f else 0.84f, isLightTheme))
+    else if (isLightTheme) Color(0xFFFAFAFA).copy(AppMaterialSettings.glassSurfaceAlpha(0.76f, isLight = true))
+        else Color(0xFF242424).copy(AppMaterialSettings.glassSurfaceAlpha(0.84f, isLight = false))
+    val chromeLens = AppMaterialSettings.chromeLensEnabled()
+    val hapticFeedback = LocalHapticFeedback.current
+    // 锚点迁移进度：比尺寸更快到 1，先"移向面板中心"再放大
+    val originProgress = remember { Animatable(0f) }
+    // 退出回弹脉冲（1 → 欠阻尼 → 0，取越过 0 的部分）
+    val settleBounce = remember { Animatable(1f) }
+    // 展开过才播退出动画，首帧不播（否则启动时按钮会被带偏）
+    var hasOpened by remember { mutableStateOf(false) }
+    // 跟手滑选：菜单项各自登记位置，手势逐帧命中测试
+    val dragSelectState = remember { DropdownPanelDragSelectState() }
+
+    // 预测性返回：始终注册（否则动画未播完时立即返回会抓不到手势）。⚠️ handler 与进度读取
+    // 必须绑定同一份状态，拆开会导致跟手动画失效。
+    val navBackState = rememberNavigationBack()
+    val backProgress = remember { Animatable(0f) }
+    val coroutineScope = rememberCoroutineScope()
+    // 按压高光 + 跟手拉伸 + 回弹
+    val interactiveHighlight = remember(coroutineScope) {
+        InteractiveHighlight(
+            animationScope = coroutineScope,
+            radiusScale = { 1f - 0.6f * fraction.value.coerceIn(0f, 1f) },
+            // 半径上限 150dp：不用 minDimension，否则菜单项越多面板越高、光晕越大。
+            // 收起态是 42dp 小圆，min 会自动退回自身尺寸，光晕不会漫出圆外。
+            radiusBaseDp = 150.dp,
+        )
+    }
+
+    navBackState.handler(
+        enabled = show && onDismiss != null,
+        onBackCancelled = {
+            onBackCancelled?.invoke()
+            coroutineScope.launch {
+                if (backProgress.value > 0f) {
+                    fraction.animateTo(1f, animationSpec = tween(150))
+                    originProgress.animateTo(1f, animationSpec = tween(150))
+                    backProgress.snapTo(0f)
+                }
+            }
+        },
+        onBackCompleted = {
+            onDismiss?.invoke()
+        },
+    )
+
+    // 逐帧收手势进度：菜单缩回锚点。backProgress() 手势进行中返回连续进度，其余时间为 null
+    LaunchedEffect(Unit) {
+        snapshotFlow { navBackState.backProgress() }
+            .collect { progress ->
+                if (progress != null && PredictiveBackSettings.enabled) {
+                    backProgress.snapTo(progress)
+                    onBackProgress?.invoke(progress)
+                    fraction.snapTo(1f - progress)
+                    originProgress.snapTo(1f - progress)
+                }
+            }
+    }
+
+    LaunchedEffect(show) {
+        if (show) {
+            hasOpened = true
+            launch {
+                fraction.animateTo(
+                    1f,
+                    spring(dampingRatio = 0.77f, stiffness = 220f, visibilityThreshold = 0.0001f)
+                )
+            }
+            launch {
+                originProgress.animateTo(
+                    1f,
+                    spring(dampingRatio = 0.77f, stiffness = 420f, visibilityThreshold = 0.0001f)
+                )
+            }
+            settleBounce.snapTo(1f)
+        } else if (!hasOpened) {
+            // 首帧（从未展开）：直接归位，不播退出动画/回弹
+            fraction.snapTo(0f)
+            originProgress.snapTo(0f)
+            settleBounce.snapTo(0f)
+        } else {
+            val exitEasing = CubicBezierEasing(0.0f, 0.0f, 0.0f, 1.0f)
+            launch {
+                fraction.animateTo(
+                    0f,
+                    spring(dampingRatio = 0.85f, stiffness = 650f, visibilityThreshold = 0.0001f)
+                )
+            }
+            // 退出位移回弹：独立一条欠阻尼 spring，与尺寸 spring 解耦。
+            // 阻尼/刚度按「700ms 宿主保留期内收完」调（0.52/220 要 ~1s，收尾会被
+            // 卸载抽掉 → 收起钮跳变），0.6/600 约 400ms 落定，脉冲幅度不变。
+            launch {
+                settleBounce.snapTo(1f)
+                settleBounce.animateTo(
+                    0f,
+                    spring(dampingRatio = 0.6f, stiffness = 600f, visibilityThreshold = 0.0001f)
+                )
+            }
+            // 这里必须"等"动画跑完（不能立刻 snapTo，否则会把上面的动画取消掉）；
+            // 用锚点 tween 兜住，结束后再收尾
+            originProgress.animateTo(0f, tween(340, easing = exitEasing))
+            fraction.snapTo(0f)
+            originProgress.snapTo(0f)
+        }
+    }
+
+    // 读 fraction 驱动尺寸；上限不钳（保留展开 spring 过冲的末尾回弹），
+    // **下限必须钳到 0**：收起弹簧（damping 0.85）会过冲到负值，负 f 让容器尺寸
+    // 小于 42dp 收起钮 → 玻璃层/阴影按畸形尺寸重绘，出现一圈模糊边缘（实测）
+    val f = fraction.value.coerceAtLeast(0f)
+    // 收起尾段整体淡出（f<0.3 → 0）：popup 架构下页面自有触发器承担静止态，
+    // 控件收到底时必须完全隐形——绝不出现「小圈玻璃」残影（用户要求）。
+    // 展开侧同理：面板从触发器位置淡入生长，与触发器图标/文字形成衔接。
+    val controlAlpha = (f / 0.3f).coerceIn(0f, 1f)
+    // 模糊与折射都随展开进度走，共用同一组 8 档量化：effects lambda 换引用才重算，
+    // 每帧换引用会让节点每帧重建 RenderEffect。
+    val blurStep = (f.coerceIn(0f, 1f) * 8f).roundToInt()
+    val expandStep = blurStep / 8f
+    // 通透玻璃档：面板模糊恒定，不随展开渐变（折射已经把「厚度」做出来了，再叠模糊只会糊掉边缘）。
+    // 其余档保持 8 → 24 的渐变；无材质档恒 0（玻璃效果整体关）。
+    val blurDp = when {
+        AppMaterialSettings.isNoneTier() -> 0f
+        AppMaterialSettings.isBestTier() -> AppMaterialSettings.glassPanelBlurDp()
+        else -> AppMaterialSettings.glassBlurDp() + 16f * expandStep
+    }
+    // 面板自然高度：由容器内的内容以全尺寸测量得到，作为高度插值终点
+    var panelHeightPx by remember { mutableIntStateOf(0) }
+    val targetHeight = if (panelHeightPx > 0) {
+        with(LocalDensity.current) { panelHeightPx.toDp() }
+    } else {
+        ButtonDiameter
+    }
+    // 材质可见度：滚动值与展开进度取大（f*5 → 0.2 饱和，出现早、消失晚）
+    val materialVisible = max(materialAlpha, (f * 5f).coerceIn(0f, 1f))
+    // 内容模糊：清晰(0)→模糊(中途)→清晰(1)
+    val contentBlur = 6.dp * (1f - abs(2f * f - 1f)).coerceIn(0f, 1f)
+    val width = lerp(ButtonDiameter, PanelWidth, f)
+    val height = lerp(ButtonDiameter, targetHeight, f)
+    // 内容随容器等比缩放（还原原来"内容有缩放"的手感），同样保留过冲
+    val contentScale = (width.value / PanelWidth.value).coerceAtLeast(0f)
+    val panelAlign: Alignment = if (panelAlignStart) Alignment.TopStart else Alignment.TopEnd
+    // 锚点迁移方向：End 对齐面板中心向左迁，Start 对齐向右迁（对称）
+    val migrateSign = if (panelAlignStart) 1f else -1f
+
+    Box(
+        modifier = modifier.padding(LiquidGlassDropdownShadowPadding)
+    ) {
+        Box(
+            modifier = Modifier
+                .align(panelAlign)
+                .graphicsLayer {
+                    val o = offsetPx()
+                    // 绕"角→正中心"迁移锚点缩放的位移（p=originProgress，s=宽/面板宽，两端为 0）
+                    val p = originProgress.value
+                    val s = size.width / PanelWidth.toPx()
+                    val k = 0.5f * p * (1f - s)
+                    // 退出位移回弹：沿收回方向（锚点角）越过终点再弹回，进入为 0
+                    val pulse = (-settleBounce.value).coerceAtLeast(0f)
+                    val bouncePx = pulse * 12f * density
+
+                    // 按压/拖拽形变：按压缩放 4dp、沿拖动方向拉伸、位移 tanh 阻尼跟手
+                    val drag = computeDragTransform(
+                        width = size.width,
+                        height = size.height,
+                        fraction = f,
+                        pressProgress = interactiveHighlight.pressProgress,
+                        offset = interactiveHighlight.offset,
+                        density = this,
+                    )
+                    scaleX = drag.scaleX
+                    scaleY = drag.scaleY
+                    translationX = o.x + migrateSign * PanelWidth.toPx() * k + bouncePx * migrateSign + drag.translationX
+                    translationY = o.y + targetHeight.toPx() * k - bouncePx + drag.translationY
+                    // 收起尾段整体淡出（f<0.3 → 0）：popup 架构下页面自有触发器承担静止态，
+                    // 控件收到底必须完全隐形——绝不出现「小圈玻璃」残影；展开侧淡入生长，
+                    // 与触发器的图标/文字形成衔接
+                    alpha = controlAlpha
+                }
+                .size(width = width, height = height)
+                // 面板自身的 root 位置：菜单项靠它把 boundsInRoot 换算成面板局部坐标
+                .onGloballyPositioned { dragSelectState.panelTopInRoot = it.boundsInRoot().top }
+                // 跟手滑选：挂在面板上而非 42dp 触发图标，手指按下后要能一路滑到任意一项
+                .dropdownPanelDragSelect(
+                    state = dragSelectState,
+                    fraction = { fraction.value },
+                    hapticFeedback = hapticFeedback
+                )
+                // 拖动手势：放在 clip 之前，不受圆角裁剪影响
+                .then(interactiveHighlight.gestureModifier)
+                .drawBehind {
+                    // 与液态玻璃按钮同一套阴影：环形（外圈减内圈）+ 模糊/外扩随材质衰减。用
+                    // materialVisible 而非 materialAlpha：展开后即使顶栏材质透明也要有阴影。
+                    val spread = materialVisible
+                    if (spread > 0.01f) {
+                        val shadowColor = if (isLightTheme) ShadowColorLight else ShadowColorDark
+                        val blurRadius = ShadowBlur * density * spread
+                        val shadowSpread = ShadowExtend * density * spread
+                        val r = PanelCornerRadius.toPx()
+                        // 环形：外圈 roundrect CW + 内圈 roundrect CCW（winding 差集）
+                        val ringPath = Path().apply {
+                            addRoundRect(
+                                RoundRect(
+                                    rect = Rect(
+                                        -shadowSpread, -shadowSpread,
+                                        size.width + shadowSpread, size.height + shadowSpread,
+                                    ),
+                                    cornerRadius = CornerRadius(r + shadowSpread, r + shadowSpread),
+                                ),
+                                Path.Direction.Clockwise,
+                            )
+                            addRoundRect(
+                                RoundRect(
+                                    rect = Rect(0f, 0f, size.width, size.height),
+                                    cornerRadius = CornerRadius(r, r),
+                                ),
+                                Path.Direction.CounterClockwise,
+                            )
+                        }
+                        drawBlurredPathShadow(
+                            path = ringPath,
+                            // alpha × ShadowAlphaGain 在浮点域 clamp（不提前压到 255，避免精度损失）
+                            color = shadowColor.copy(
+                                alpha = (shadowColor.alpha * ShadowAlphaGain).coerceAtMost(1f),
+                            ),
+                            blurRadius = blurRadius.coerceAtLeast(0.1f),
+                        )
+                    }
+                }
+                .clip(ContinuousRoundedRectangle(PanelCornerRadius))
+        ) {
+            // 面板采样效果：blur 取上面的 blurDp（当前兼容桩只给 BEST=4dp / NONE=关闭），
+            // 展开渐变那一路仅在 BALANCED 档生效，目前不可达；无材质档整体关玻璃。
+            // （上游 BEST 档走 SoftGlass live shader，本工程无该基建，所有档统一走此分支）
+            val glassEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
+                remember(chromeLens, blurStep, blurDp) {
+                    {
+                        if (AppMaterialSettings.glassEffectsEnabled()) {
+                            blur(blurDp.dp.toPx())
+                            if (chromeLens) lens(6f.dp.toPx(), 36f.dp.toPx())
+                        }
+                    }
+                }
+            // 玻璃单独一层：只有它跟材质 alpha（layerBlock 作用于整个节点，挂容器上会连图标一起透明）
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer { alpha = materialVisible }
+                    .drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { ContinuousRoundedRectangle(PanelCornerRadius) },
+                        effects = glassEffects,
+                        highlight = null,
+                        shadow = null,
+                        onDrawSurface = { drawRect(containerColor) }
+                    )
+                    .edgeLight(
+                        shape = ContinuousRoundedRectangle(PanelCornerRadius),
+                        edgeLight = rememberDefaultEdgeLight(),
+                    )
+            )
+
+                // 按压高光必须夹在玻璃壳与菜单内容之间：居上被材质盖住，居下会盖掉
+                // 菜单项的跟手高亮底色（Plus 加色会把底色冲白）。
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .then(interactiveHighlight.modifier)
+            )
+
+            // 菜单内容：全尺寸居中、按中心缩放，随容器长大被裁出
+            Column(
+                modifier = Modifier
+                    // 居中：缩放中心始终 = 当前卡片整体的正中心
+                    .align(Alignment.Center)
+                    .requiredWidth(PanelWidth)
+                    .wrapContentHeight(align = Alignment.CenterVertically, unbounded = true)
+                    .onSizeChanged { panelHeightPx = it.height }
+                    .graphicsLayer {
+                        // 内容可见窗口：f<0.3 全隐、f>0.7 全显
+                        alpha = ((f - 0.3f) / 0.4f).coerceIn(0f, 1f)
+                        scaleX = contentScale
+                        scaleY = contentScale
+                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                    }
+                    .blur(contentBlur)
+                    .padding(vertical = 8.dp)
+            ) {
+                // 菜单项从这里读跟手选中态（局部坐标换算要用面板在 root 里的位置）
+                CompositionLocalProvider(LocalDropdownPanelDragSelect provides dragSelectState) {
+                    content()
+                }
+            }
+
+            // 收起态不再渲染 42dp 玻璃圆钮：popup 架构下页面自有触发器承担静止态
+            //（收起时控件整体淡出，见 controlAlpha），内部触发钮只会画出「小圈玻璃」残影。
+            // 展开点击由页面锚点承接（各调用点的 clickable / onMenuTap）。
+        }
+    }
+}
+
+@Composable
+fun LiquidGlassDropdownMenuItem(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: @Composable (() -> Unit)? = null,
+    /** 选中态：文字主题色 + 右缘勾号（Canvas 描边，粗细与字重匹配，不与文字重叠） */
+    selected: Boolean = false,
+) {
+    val isLightTheme = !isAppDarkTheme()
+    val textColor = if (isLightTheme) Color(0xFF1A1A1A) else Color(0xFFE8E4DE)
+    val accentColor = MiuixTheme.colorScheme.primary
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+            .clip(ContinuousRoundedRectangle(17.dp))
+            // 登记纵向区间供面板命中测试 + 绘制跟手高亮
+            .dropdownPanelEntry(enabled = true, action = onClick)
+            // 无障碍点击动作：菜单项不再挂 clickable（会与面板手势抢事件），
+            // 但读屏/键盘仍要能触发
+            .semantics {
+                role = Role.Button
+                onSemanticsClick {
+                    onClick()
+                    true
+                }
+            }
+            .padding(horizontal = 14.dp, vertical = 10.5.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) {
+                icon()
+                Spacer(modifier = Modifier.size(10.dp))
+            }
+            Text(
+                text = text,
+                fontSize = 15.6.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) accentColor else textColor,
+                // 占满剩余宽度：把勾号推到行右缘，与文字永不重叠
+                modifier = Modifier.weight(1f)
+            )
+            if (selected) {
+                // 勾号用 Canvas 描边而非字体字形：粗细（2.2dp 圆头）与 15.6sp Medium
+                // 字重的笔画厚度一致，且不受系统字体勾号字形差异影响
+                Canvas(modifier = Modifier.size(15.dp)) {
+                    val stroke = Stroke(
+                        width = 2.2.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    )
+                    val check = Path().apply {
+                        moveTo(size.width * 0.16f, size.height * 0.54f)
+                        lineTo(size.width * 0.42f, size.height * 0.78f)
+                        lineTo(size.width * 0.84f, size.height * 0.24f)
+                    }
+                    drawPath(check, accentColor, style = stroke)
+                }
+            }
+        }
+    }
+}

@@ -3,9 +3,11 @@ package com.iji.app.ui.assets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.derivedStateOf
+import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiTopBar
-import com.iji.app.ui.components.ijiIconFocusRing
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.ijiTopBarRecordHeight
+import com.iji.app.ui.components.topbar.LiquidTopBarButton
 import com.iji.app.ui.components.topbar.topBarContentInset
 import com.iji.app.ui.components.topbar.rememberTopBarScrollBehavior
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -15,12 +17,11 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 
-import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,7 +34,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -50,8 +50,14 @@ import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.IjiDangerTextAction
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.StateView
-import com.iji.app.ui.components.menu.AnchoredIconDropdownMenu
-import top.yukonga.miuix.kmp.basic.DropdownItem
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenu
+import com.iji.app.ui.components.menu.LiquidGlassDropdownOverlayHost
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenuItem
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -73,9 +79,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
@@ -102,10 +111,12 @@ import kotlinx.coroutines.delay
 
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IjiTheme
 import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 资产页（仿设计稿）：净资产总览卡 + 资金账户列表 + 左上角加号添加账户。
@@ -122,7 +133,7 @@ fun AssetsScreen(
     highlightAccountId: Long? = null,
     /** 高亮消费完毕（清掉回传值，避免下次进页面又滚一次） */
     onHighlightConsumed: () -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
     viewModel: AssetsViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -233,8 +244,9 @@ fun AssetsScreen(
     val listState = rememberLazyListState()
     val topBarSurface = MaterialTheme.colorScheme.background
     val topBarBackdrop = rememberLayerBackdrop { drawRect(topBarSurface); drawContent() }
-    // 顶栏采样层节流：滚动中才重录，静止不录、不重跑顶栏模糊 shader（见 GlassBottomNavBar / AppRoot 同款优化）。
-    val topBarMustRecord = remember(listState) { { listState.isScrollInProgress } }
+    // 顶栏采样层节流：滚动中才重录，静止不录、不重跑顶栏模糊 shader（见 LiquidBottomTabs / AppRoot 同款优化）。
+    val topBarRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val topBarMustRecord = remember(listState) { { topBarRecordGate.shouldRecord(listState.isScrollInProgress) } }
     val listScrolled by remember {
         derivedStateOf {
             listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
@@ -275,6 +287,12 @@ fun AssetsScreen(
         onHighlightConsumed()
     }
 
+    // 账户行点状菜单（NexioSchedule 面板在根 overlay 层；LazyColumn 裁剪 item，面板必须出层）
+    var menuOpen by remember { mutableStateOf(false) }
+    var menuAccount by remember { mutableStateOf<Account?>(null) }
+    var menuAnchorBounds by remember { mutableStateOf(Rect.Zero) }
+    val menuFraction = remember { Animatable(0f) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
@@ -283,7 +301,7 @@ fun AssetsScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .topBarContentInset(scrollBehavior)
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
-                .then(if (listScrolled) Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord) else Modifier),
+                .then(if (listScrolled) Modifier.layerBackdrop(topBarBackdrop, recordKey = Unit, mustRecord = topBarMustRecord, recordHeight = ijiTopBarRecordHeight()) else Modifier),
             // bottom 要让出底栏（96dp）+ 一点富余：滚到底时最后一个账户不能被底栏压住
             // （新建的账户就排在最后，创建后要能完整看到）
             contentPadding = PaddingValues(top = ijiTopBarContentPadding(), bottom = 120.dp),
@@ -456,6 +474,14 @@ fun AssetsScreen(
                     onTransfer = { transferFrom = it },
                     onHide = { viewModel.hideAccount(it) },
                     onDelete = { viewModel.deleteAccount(it) },
+                    onMenuTap = { account, anchorBounds ->
+                        menuAccount = account
+                        menuAnchorBounds = anchorBounds
+                        menuOpen = true
+                    },
+                    menuOpen = menuOpen,
+                    menuAccount = menuAccount,
+                    menuFraction = menuFraction,
                     onReorder = { ordered ->
                         // 本组新顺序合回整页顺序后写库：其余组保持原样，按展示顺序重新编号
                         viewModel.reorderAccounts(
@@ -485,21 +511,71 @@ fun AssetsScreen(
             scrollBehavior = scrollBehavior,
             onMineClick = onNavigateMine,
             title = "资产",
-            startAction = { _, _ ->
-                top.yukonga.miuix.kmp.basic.IconButton(
+            startAction = { backdropAlpha, shadowAlpha ->
+                // 顶栏上滑变糊时按钮浮出液态玻璃材质（backdropAlpha 随模糊带弹簧升降）
+                LiquidTopBarButton(
                     onClick = onNavigateAddAccount,
-                    modifier = Modifier.minTouchTarget().ijiIconFocusRing(),
-                ) {
-                    Icon(
-                        MiuixIcons.Add,
-                        contentDescription = "添加账户",
-                        // 跟随主题：写死深色在深色模式下会直接看不见
-                        tint = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                    icon = MiuixIcons.Add,
+                    contentDescription = "添加账户",
+                    backdrop = topBarBackdrop,
+                    backdropAlpha = backdropAlpha,
+                    shadowAlpha = shadowAlpha,
+                )
             },
         )
+
+        // 账户点状菜单 overlay（NexioSchedule LiquidGlassDropdownMenu）：面板长在全屏覆盖层
+        // （LazyColumn 裁剪 item 内容，面板必须出层），graphicsLayer 平移到占位槽位置。
+        // 放在 IjiTopBar 之后 = 最后绘制，面板盖过页面其余部分。
+        val menuBackdrop = LocalAppBackdrop.current
+        if (menuBackdrop != null) {
+            LiquidGlassDropdownOverlayHost(expanded = menuOpen, onOutsideTap = { menuOpen = false }) {
+                LiquidGlassDropdownMenu(
+                    show = menuOpen,
+                    backdrop = menuBackdrop,
+                    fraction = menuFraction,
+                    onDismiss = { menuOpen = false },
+                    // 覆盖式（End）：控制盒**右上角**恒 = 锚右 + 26dp（玻璃右缘 = 锚右 + 2dp、
+                    // 顶 = 锚顶 − 2dp）——面板从三点按钮位置向左下生长覆盖触发器，收起缩回
+                    // 按钮位置与图标衔接（size.width 逐帧读取，含 24dp 阴影内缩）
+                    modifier = Modifier
+                        .graphicsLayer {
+                            alpha = (menuFraction.value.coerceAtLeast(0f) / 0.3f).coerceIn(0f, 1f)
+                            translationX = menuAnchorBounds.right + 26.dp.toPx() - size.width
+                            translationY = menuAnchorBounds.top - 26.dp.toPx()
+                        },
+                ) {
+                    LiquidGlassDropdownMenuItem(
+                        text = "编辑",
+                        onClick = {
+                            menuOpen = false
+                            menuAccount?.let { onNavigateEditAccount(it.id) }
+                        },
+                    )
+                    LiquidGlassDropdownMenuItem(
+                        text = "转账",
+                        onClick = {
+                            menuOpen = false
+                            menuAccount?.let { transferFrom = it }
+                        },
+                    )
+                    LiquidGlassDropdownMenuItem(
+                        text = "隐藏",
+                        onClick = {
+                            menuOpen = false
+                            menuAccount?.let { viewModel.hideAccount(it) }
+                        },
+                    )
+                    LiquidGlassDropdownMenuItem(
+                        text = "删除",
+                        onClick = {
+                            menuOpen = false
+                            menuAccount?.let { viewModel.deleteAccount(it) }
+                        },
+                    )
+                }
+            }
+        }
     }
 
     // 转账弹窗
@@ -528,9 +604,12 @@ fun AssetsScreen(
     )
 }
 
-/** 借入 / 借出图标底色：低饱和的蓝灰与青绿，白箭头下对比足够又不刺眼 */
-private val BorrowBadgeColor = Color(0xFF78818A)
-private val LendBadgeColor = Color(0xFF5CA98B)
+/**
+ * 借入 / 借出图标底色：低饱和的蓝灰与青绿，白箭头下对比足够又不刺眼。
+ * 在旧色（#78818A / #5CA98B）基础上明度调高一档、饱和微加，避免在白卡上显得发灰发暗。
+ */
+private val BorrowBadgeColor = Color(0xFF8494A4)
+private val LendBadgeColor = Color(0xFF6DB99C)
 
 /** 借入 / 借出：左圆角色块图标 + 右侧「标签 / 金额」两行，两卡等权并排 */
 @Composable
@@ -663,6 +742,12 @@ private fun AccountGroupCard(
     onHide: (Account) -> Unit,
     onDelete: (Account) -> Unit,
     onReorder: (List<Account>) -> Unit,
+    /** 点状菜单被点击（NexioSchedule 面板在页面根 overlay 层，anchor 与目标账户上提） */
+    onMenuTap: (Account, Rect) -> Unit = { _, _ -> },
+    /** 菜单展开态 + 目标账户 + 展开进度：供行内三点图标做一镜到底过渡 */
+    menuOpen: Boolean = false,
+    menuAccount: Account? = null,
+    menuFraction: Animatable<Float, *> = remember { Animatable(0f) },
 ) {
     // 拖拽期间用本地顺序即时换位；写库只在松手时发生一次
     var order by remember { mutableStateOf(accounts) }
@@ -755,6 +840,10 @@ private fun AccountGroupCard(
                     onTransfer = { onTransfer(account) },
                     onHide = { onHide(account) },
                     onDelete = { onDelete(account) },
+                    onMenuTap = { anchorBounds -> onMenuTap(account, anchorBounds) },
+                    menuOpen = menuOpen,
+                    menuActive = menuAccount?.id == account.id,
+                    menuFraction = menuFraction,
                 )
                 if (index < order.lastIndex) AccountRowDivider()
             }
@@ -790,8 +879,13 @@ private fun AccountRow(
     onTransfer: () -> Unit = {},
     onHide: () -> Unit = {},
     onDelete: () -> Unit = {},
+    /** 点状菜单被点击：上报占位槽左上角（root 坐标），面板由页面根的 overlay 层绘制 */
+    onMenuTap: (Rect) -> Unit = {},
+    /** 一镜到底过渡：本行三点是否为当前菜单宿主 + 展开态 + 进度 */
+    menuOpen: Boolean = false,
+    menuActive: Boolean = false,
+    menuFraction: Animatable<Float, *> = remember { Animatable(0f) },
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -804,7 +898,7 @@ private fun AccountRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AccountIconImage(iconKey = account.iconKey, size = 44.dp)
+        AccountIconImage(iconKey = account.iconKey, size = IjiIconSize.Hero)
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -840,31 +934,33 @@ private fun AccountRow(
             }
         }
         Spacer(Modifier.width(4.dp))
-        // 右上角 Miuix 风格点状菜单（统一走 AnchoredIconDropdownMenu，行为与全站下拉菜单一致）
-        AnchoredIconDropdownMenu(
-            expanded = menuOpen,
-            onDismissRequest = { menuOpen = false },
-            // 触控区 48dp。必须用固定 size 而不是 minTouchTarget()：
-            // 该菜单内部是 fillMaxSize 的 Box，只给 minWidth 会让它把行内剩余宽度全吃掉
-            modifier = Modifier.size(48.dp),
-            // 每次重组直接构建（不缓存）：onClick 始终捕获最新回调与状态，
-            // 避免 remember key 变化导致回调过期、点击表现为「无反应」
-            items = listOf(
-                DropdownItem(text = "编辑", onClick = onEdit),
-                DropdownItem(text = "转账", onClick = onTransfer),
-                DropdownItem(text = "隐藏", onClick = onHide),
-                DropdownItem(text = "删除", onClick = onDelete),
-            ),
+        // 右上角点状菜单（NexioSchedule LiquidGlassDropdownMenu）：占位槽负责定位与点击
+        //（popup 层的收起态玻璃钮收起后即卸载，展开点击必须由本锚点承接），
+        // 玻璃圆钮与面板由页面根的 overlay 层绘制（LazyColumn 会裁剪 item 内容，面板必须出层）。
+        var menuAnchorLocal by remember { mutableStateOf(Rect.Zero) }
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                                .clickable(
+                    // 触发钮无默认涟漪（NexioSchedule 同款）：反馈由面板原地弹出承接
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onMenuTap(menuAnchorLocal) }
+                .onGloballyPositioned { menuAnchorLocal = it.boundsInWindow() },
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .clickable { menuOpen = true },
-                contentAlignment = Alignment.Center,
-            ) {
-                ThreeDotsIcon(tint = TextSecondary)
-            }
+            ThreeDotsIcon(
+                tint = TextSecondary,
+                modifier = Modifier.graphicsLayer {
+                    // 一镜到底（NexioSchedule）：图标随 fraction 向面板内部（左下）漂移并
+                    // 提前淡完（k=2.5）；收起以更小系数更早浮现（k=1.7）。仅菜单宿主行参与
+                    val iconK = if (menuOpen) 2.5f else 1.7f
+                    val p = ((if (menuActive) menuFraction.value else 0f) * iconK).coerceIn(0f, 1f)
+                    alpha = 1f - p
+                    translationX = -p * 10.dp.toPx()
+                    translationY = p * 10.dp.toPx()
+                },
+            )
         }
     }
 }
@@ -983,7 +1079,7 @@ private fun HiddenAccountRow(
             .padding(horizontal = 8.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AccountIconImage(iconKey = account.iconKey, size = 36.dp)
+        AccountIconImage(iconKey = account.iconKey, size = IjiIconSize.ListRow)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -1216,45 +1312,23 @@ private fun AccountsEmptyCard(
  *
  * 删掉搜索框后不再需要横向滚动：4 个选项等分整行宽度，左右留白与卡片一致，
  * 选中块铺满自己的格子，任何屏宽下都不会出现半截截断或右侧空档。
+ * 切换动画走共用底座 [IjiSegmentedRow] 的滑动指示器。
  */
 @Composable
 private fun AccountFilterBar(
     filter: AccountFilter,
     onFilterChange: (AccountFilter) -> Unit,
 ) {
-    Row(
+    IjiSegmentedRow(
+        options = AccountFilter.entries.toList(),
+        selected = filter,
+        onSelect = onFilterChange,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = LocalDimens.current.screenPadding)
-            // 未选中项落在浅灰槽里（onSurface 8%），深色模式下不会糊成一片
-            .clip(RoundedCornerShape(Radius.xxl))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            .padding(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AccountFilter.entries.forEach { option ->
-            val selected = option == filter
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 34.dp)
-                    .clip(RoundedCornerShape(Radius.xxl))
-                    .background(if (selected) MiuixPrimary else Color.Transparent)
-                    // 已选中不再响应点击：省掉一次无意义的同值写入
-                    .clickable(enabled = !selected) { onFilterChange(option) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    option.label,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (selected) Color.White else TextSecondary,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    // 单行不换行：字少时不会被系统字体放大撑成两行
-                    maxLines = 1,
-                )
-            }
-        }
-    }
+            .padding(horizontal = LocalDimens.current.screenPadding),
+        textStyle = MaterialTheme.typography.bodySmall,
+        label = { it.label },
+    )
 }
 
 @Preview(showBackground = true)

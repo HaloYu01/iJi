@@ -1,8 +1,8 @@
 from PIL import Image
 import os
 
-# 源图片路径
-source_path = r"Y:\iji-android\app\src\main\res\drawable\icon_source.png"
+# 源图片路径（放在 tools/ 而不是 res/：res 下的图会被打进 APK，这张 2.6MB 只是生成用的底图）
+source_path = r"Y:\iji-android\tools\icon_source.png"
 
 # 打开源图片
 img = Image.open(source_path)

@@ -2,10 +2,9 @@ package com.iji.app.ui.assets
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,13 +14,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
@@ -39,18 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -61,7 +53,6 @@ import com.iji.app.data.model.Account
 import com.iji.app.data.model.AccountType
 import com.iji.app.ui.components.AccountIconImage
 import com.iji.app.ui.components.ContentState
-import com.iji.app.ui.components.IjiCategoryChips
 import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.IjiFormCard
 import com.iji.app.ui.components.IjiFormDivider
@@ -79,21 +70,16 @@ import com.iji.app.ui.components.sanitizeAmountInput
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
-import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.iji.app.ui.util.sharedMainViewModel
 
-/** 宽屏（横屏 / 平板）断点：超过它改为「左表单 + 右图标」两栏 */
-private val WIDE_BREAKPOINT = 720.dp
-/** 宽屏下内容最大宽度，避免在平板上被拉成超长输入框 */
+/** 宽屏（横屏 / 平板）下内容最大宽度，避免被拉成超长输入框 */
 private val FORM_MAX_WIDTH = 720.dp
-/** 宽屏下左侧表单列固定宽度 */
-private val WIDE_FORM_COLUMN = 360.dp
-/** 图标网格单元的最小宽度（决定列数） */
-private val ICON_CELL_MIN_WIDTH = 76.dp
-private const val ICON_GRID_MIN_COLUMNS = 3
-private const val ICON_GRID_MAX_COLUMNS = 6
+
+/** 头部图标尺寸：图标充满它，整个图标就是「换图标」的按钮 */
+private val ICON_HEADER_SIZE = 64.dp
 
 private const val NAME_MAX = 12
 private const val SUB_NAME_MAX = 20
@@ -101,19 +87,19 @@ private const val SUB_NAME_MAX = 20
 /** 金额（分）→ 输入框文本 */
 private fun formatBalanceInput(cents: Long): String = "%.2f".format(cents / 100.0)
 
-/** 三个输入框的焦点句柄，用于「名称 → 备注 → 余额」的 IME Next 串联 */
+/** 输入框的焦点句柄，用于「名称 → 余额 → 备注」的 IME Next 串联 */
 private class AccountFocus {
     val name = FocusRequester()
-    val subName = FocusRequester()
     val balance = FocusRequester()
+    val subName = FocusRequester()
 }
 
 /**
  * 添加 / 编辑账户页。
  *
- * 三张卡片分组：账户信息（名称 + 备注）/ 余额（金额 + 计入净资产）/ 账户图标（分类 + 搜索 + 网格）。
- * 宽度 ≥ [WIDE_BREAKPOINT] 改为「左表单 + 右图标网格」两栏，内容最大 [FORM_MAX_WIDTH] 居中；
- * 网格列数按可用宽度在 3~6 之间自适应。
+ * 紧凑三卡：图标 + 名称（同卡，点图标弹 [AccountIconPickerSheet]）/ 余额 + 计入净资产 / 备注。
+ * 图标选择收进底部弹层，选图标时名称自动带出（用户改过名则不覆盖），一屏即可完成填写；
+ * 宽屏（横屏 / 平板）下内容限 [FORM_MAX_WIDTH] 居中。
  *
  * 校验：名称为空在提交时报错；重名在输入停顿 350ms 后查库，实时提示并禁用提交；
  * 编辑态改余额需二次确认（直接改余额不会生成流水）。
@@ -129,11 +115,11 @@ fun AddAccountScreen(
     /**
      * 新建成功回调（带新账户 id），用于让资产页滚到并高亮它。
      *
-     * 不走 MainViewModel：它在 NavHost 里是每个目的地各一份实例，页面之间不共享状态；
-     * 由 AppRoot 通过 savedStateHandle 回传给资产页。
+     * 不走全局状态：这是一次性导航结果，由 AppRoot 通过 savedStateHandle 回传给资产页，
+     * 避免退出页面后仍残留「待高亮」标记。
      */
     onCreated: (Long) -> Unit = { onBack() },
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
     viewModel: AssetsViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -161,8 +147,7 @@ fun AddAccountScreen(
     var iconKey by rememberSaveable { mutableStateOf(defaultIcon) }
     var balanceInput by rememberSaveable { mutableStateOf("") }
     var includeInNetWorth by rememberSaveable { mutableStateOf(true) }
-    var selectedType by rememberSaveable { mutableStateOf(AccountType.ALL) }
-    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var showIconPicker by rememberSaveable { mutableStateOf(false) }
 
     var submitting by remember { mutableStateOf(false) }
     // 只在「点过保存且名称为空」后显示空名错误，避免一进页面就报红
@@ -184,7 +169,6 @@ fun AddAccountScreen(
         balanceInput = formatBalanceInput(acc.balanceCents)
         includeInNetWorth = acc.includeInNetWorth
         iconKey = acc.iconKey
-        selectedType = AccountType.ofAccount(acc.category, acc.iconKey, acc.name)
         seeded = true
     }
 
@@ -205,11 +189,10 @@ fun AddAccountScreen(
         iconKey != (editingAccount?.iconKey ?: defaultIcon) ||
         includeInNetWorth != (editingAccount?.includeInNetWorth ?: true)
 
-    // 分类：新建看用户选的；编辑跟随图标自动归类，图标未改则沿用原分类，
-    // 避免把老账户的英文 iconKey 归到「其他」
+    // 分类：新建跟随所选图标归类；编辑时图标没改沿用原分类，
+    // 改了图标则按新图标重新归类，避免把老账户的英文 iconKey 归到「其他」
     val resolvedCategory = when {
-        editingAccount == null ->
-            if (selectedType != AccountType.ALL) selectedType else AccountType.typeOf(iconKey)
+        editingAccount == null -> AccountType.typeOf(iconKey)
         iconKey == editingAccount.iconKey ->
             AccountType.ofAccount(editingAccount.category, editingAccount.iconKey, editingAccount.name)
         else -> AccountType.ofAccount("", iconKey, trimmedName)
@@ -221,6 +204,20 @@ fun AddAccountScreen(
         else -> null
     }
     val canSubmit = trimmedName.isNotEmpty() && !nameTaken && !submitting
+
+    /**
+     * 选图标：名称自动带出。名称是「空的 / 与上一个图标同名 / 与编辑基线的图标同名」
+     * 都视为用户没起过自定义名，跟随新图标，免去选完图标再回顶部打一遍名字的重复输入；
+     * 一旦用户自己改过名，换图标不再覆盖。
+     */
+    fun pickIcon(newIcon: String) {
+        val oldIcon = iconKey
+        iconKey = newIcon
+        val followsIcon = name.isEmpty() ||
+            name == oldIcon ||
+            (editingAccount != null && name == editingAccount.iconKey)
+        if (followsIcon) name = newIcon.take(NAME_MAX)
+    }
 
     /** 写库（调用前已通过校验） */
     fun persist() {
@@ -284,24 +281,6 @@ fun AddAccountScreen(
     // 系统返回键与顶栏返回同一套逻辑
     BackHandler(enabled = dirty && !submitting) { showDiscardDialog = true }
 
-    // 表单两块内容：单列与双栏布局共用，避免复制参数
-    fun LazyListScope.formContent() {
-        accountFormItems(
-            isEditing = isEditing,
-            name = name,
-            onNameChange = { name = it.take(NAME_MAX) },
-            nameError = nameError,
-            subName = subName,
-            onSubNameChange = { subName = it.take(SUB_NAME_MAX) },
-            balanceInput = balanceInput,
-            onBalanceChange = { balanceInput = sanitizeAmountInput(it) },
-            includeInNetWorth = includeInNetWorth,
-            onIncludeChange = { includeInNetWorth = it },
-            focus = focus,
-            onSubmit = { submit() },
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -335,70 +314,52 @@ fun AddAccountScreen(
             }
 
             else -> {
-                // 编辑态不过滤图标：分类随所选图标自动归类，必须能选到任意分类的图标
-                val filteredIcons = rememberIcons(
-                    all = accountIcons,
-                    type = if (isEditing) AccountType.ALL else selectedType,
-                    query = searchQuery,
-                )
-
-                BoxWithConstraints(
+                LazyColumn(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        // 平板 / 横屏下表单限宽居中，不拉成超长输入框
+                        .widthIn(max = FORM_MAX_WIDTH)
+                        .align(Alignment.CenterHorizontally),
+                    contentPadding = PaddingValues(
+                        start = LocalDimens.current.screenPadding,
+                        end = LocalDimens.current.screenPadding,
+                        top = 16.dp,
+                        bottom = 24.dp,
+                    ),
                 ) {
-                    val screenPadding = LocalDimens.current.screenPadding
-                    val wide = maxWidth >= WIDE_BREAKPOINT
-                    // 列数按可用宽度自适应；大字模式（fontScale 大）自动少一列，避免名称被截成省略号
-                    val fontScale = LocalConfiguration.current.fontScale
-                    val usable = maxWidth - screenPadding * 2 - 24.dp
-                    val minCell = ICON_CELL_MIN_WIDTH * fontScale.coerceIn(1f, 1.35f)
-                    val columns = (usable / minCell).toInt()
-                        .coerceIn(ICON_GRID_MIN_COLUMNS, ICON_GRID_MAX_COLUMNS)
-
-                    fun LazyListScope.iconContent() {
-                        iconPicker(
-                            icons = filteredIcons,
-                            selected = iconKey,
-                            columns = columns,
-                            isEditing = isEditing,
-                            selectedType = selectedType,
-                            onSelectType = { selectedType = it },
-                            resolvedLabel = resolvedCategory.label,
-                            searchQuery = searchQuery,
-                            onSearchChange = { searchQuery = it.take(20) },
-                            onPick = { iconKey = it },
-                        )
+                    item(key = "icon-name") {
+                        Box(Modifier.padding(bottom = 16.dp)) {
+                            IconNameCard(
+                                iconKey = iconKey,
+                                onPickIcon = { showIconPicker = true },
+                                name = name,
+                                onNameChange = { name = it.take(NAME_MAX) },
+                                nameError = nameError,
+                                nameLength = name.length,
+                                focus = focus,
+                            )
+                        }
                     }
-
-                    if (wide) {
-                        // 宽屏两栏：左表单固定宽、右图标网格填满剩余
-                        Row(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .widthIn(max = FORM_MAX_WIDTH)
-                                .align(Alignment.TopCenter)
-                                .padding(horizontal = screenPadding, vertical = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            LazyColumn(modifier = Modifier.width(WIDE_FORM_COLUMN)) { formContent() }
-                            LazyColumn(modifier = Modifier.weight(1f)) { iconContent() }
+                    item(key = "balance") {
+                        Box(Modifier.padding(bottom = 16.dp)) {
+                            BalanceCard(
+                                isEditing = isEditing,
+                                balanceInput = balanceInput,
+                                onBalanceChange = { balanceInput = sanitizeAmountInput(it) },
+                                focus = focus,
+                                includeInNetWorth = includeInNetWorth,
+                                onIncludeChange = { includeInNetWorth = it },
+                            )
                         }
-                    } else {
-                        // 单列：一个 LazyColumn 承载全部内容，不嵌套滚动。
-                        // 间距用块内 bottom padding 而非 spacedBy：图标头部与网格行必须无缝拼成一张卡
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = screenPadding,
-                                end = screenPadding,
-                                top = 16.dp,
-                                bottom = 24.dp,
-                            ),
-                        ) {
-                            formContent()
-                            iconContent()
-                        }
+                    }
+                    item(key = "subname") {
+                        SubNameCard(
+                            subName = subName,
+                            onSubNameChange = { subName = it.take(SUB_NAME_MAX) },
+                            focus = focus,
+                            onSubmit = { submit() },
+                        )
                     }
                 }
 
@@ -407,6 +368,7 @@ fun AddAccountScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     IjiFormDivider(startPadding = 0.dp)
                     IjiPrimaryButton(
@@ -418,6 +380,7 @@ fun AddAccountScreen(
                         onClick = { submit() },
                         enabled = canSubmit,
                         modifier = Modifier
+                            .widthIn(max = FORM_MAX_WIDTH)
                             .fillMaxWidth()
                             .padding(horizontal = LocalDimens.current.screenPadding, vertical = 12.dp),
                     )
@@ -425,6 +388,19 @@ fun AddAccountScreen(
             }
         }
     }
+
+    // 图标选择弹层：点选即确认并关闭
+    AccountIconPickerSheet(
+        show = showIconPicker,
+        allIcons = accountIcons,
+        selectedIconKey = iconKey,
+        resolvedCategoryLabel = resolvedCategory.label,
+        onDismissRequest = { showIconPicker = false },
+        onPick = { newIcon ->
+            showIconPicker = false
+            pickIcon(newIcon)
+        },
+    )
 
     // 未保存确认
     IjiDialog(
@@ -453,210 +429,80 @@ fun AddAccountScreen(
     )
 }
 
-/** 表单区（账户信息 + 余额）：两栏与单列布局共用 */
-private fun LazyListScope.accountFormItems(
-    isEditing: Boolean,
+/** 头部卡：当前图标（点击换）+ 账户名称，同一张卡 */
+@Composable
+private fun IconNameCard(
+    iconKey: String,
+    onPickIcon: () -> Unit,
     name: String,
     onNameChange: (String) -> Unit,
     nameError: String?,
-    subName: String,
-    onSubNameChange: (String) -> Unit,
-    balanceInput: String,
-    onBalanceChange: (String) -> Unit,
-    includeInNetWorth: Boolean,
-    onIncludeChange: (Boolean) -> Unit,
-    focus: AccountFocus,
-    onSubmit: () -> Unit,
-) {
-    item(key = "info") {
-        Box(Modifier.padding(bottom = 16.dp)) {
-            AccountInfoBlock(
-                name = name,
-                onNameChange = onNameChange,
-                nameError = nameError,
-                subName = subName,
-                onSubNameChange = onSubNameChange,
-                focus = focus,
-            )
-        }
-    }
-    item(key = "balance") {
-        Box(Modifier.padding(bottom = 16.dp)) {
-            BalanceBlock(
-                isEditing = isEditing,
-                balanceInput = balanceInput,
-                onBalanceChange = onBalanceChange,
-                focus = focus,
-                includeInNetWorth = includeInNetWorth,
-                onIncludeChange = onIncludeChange,
-                onSubmit = onSubmit,
-            )
-        }
-    }
-}
-
-/**
- * 图标区：头部 + 网格行拼成一张卡。
- *
- * 网格逐行渲染（145 个图标不能一次性组合），空结果时用同样式的一行占位。
- */
-private fun LazyListScope.iconPicker(
-    icons: List<String>,
-    selected: String,
-    columns: Int,
-    isEditing: Boolean,
-    selectedType: AccountType,
-    onSelectType: (AccountType) -> Unit,
-    resolvedLabel: String,
-    searchQuery: String,
-    onSearchChange: (String) -> Unit,
-    onPick: (String) -> Unit,
-) {
-    item(key = "icon-head") {
-        IconPickerHeader(
-            isEditing = isEditing,
-            selectedType = selectedType,
-            onSelectType = onSelectType,
-            resolvedLabel = resolvedLabel,
-            iconKey = selected,
-            iconCount = icons.size,
-            searchQuery = searchQuery,
-            onSearchChange = onSearchChange,
-        )
-    }
-
-    if (icons.isEmpty()) {
-        item(key = "icon-empty") { EmptyIconRow() }
-        return
-    }
-
-    val rows = icons.chunked(columns)
-    rows.forEachIndexed { index, row ->
-        item(key = "icon-row-$index") {
-            IconRow(
-                icons = row,
-                selected = selected,
-                columns = columns,
-                last = index == rows.lastIndex,
-                onPick = onPick,
-            )
-        }
-    }
-}
-
-/** 图标过滤：分类 → 搜索（含银行简称别名）→ 常用项前置 */
-@Composable
-private fun rememberIcons(
-    all: List<String>,
-    type: AccountType,
-    query: String,
-): List<String> = remember(all, type, query) {
-    val byType = if (type == AccountType.ALL) all else all.filter { AccountType.typeOf(it) == type }
-    val q = query.trim()
-    val bySearch = if (q.isEmpty()) byType else byType.filter { matchesIconQuery(it, q) }
-    AccountType.sortByPriority(bySearch, type.priorityKeywords)
-}
-
-/**
- * 图标搜索匹配：名称包含关键词，或命中简称别名（「招行」「zsyh」→ 招商银行）。
- * 名称都是中文全名，用户很难记得住，这里只为常见银行 / 支付补一张小别名表。
- */
-private val ICON_ALIASES = mapOf(
-    "招商银行" to listOf("招行", "zsyh", "cmb"),
-    "工商银行" to listOf("工行", "gsyh", "icbc"),
-    "建设银行" to listOf("建行", "jsyh", "ccb"),
-    "农业银行" to listOf("农行", "nyyh", "abc"),
-    "中国银行" to listOf("中行", "zgyh", "boc"),
-    "交通银行" to listOf("交行", "jtyh", "bocom"),
-    "邮政储蓄银行" to listOf("邮储", "邮局", "yzyh", "psbc"),
-    "中信银行" to listOf("中信", "zxyh", "citic"),
-    "浦发银行" to listOf("浦发", "pfyh", "spdb"),
-    "民生银行" to listOf("民生", "msyh", "cmbc"),
-    "兴业银行" to listOf("兴业", "xyyh"),
-    "光大银行" to listOf("光大", "gdyh"),
-    "平安银行" to listOf("平安", "payh"),
-    "广发银行" to listOf("广发", "gfyh"),
-    "华夏银行" to listOf("华夏", "hxyh"),
-    "支付宝" to listOf("zfb", "alipay"),
-    "微信" to listOf("wx", "wechat", "微信支付"),
-    "云闪付" to listOf("ysf", "银联"),
-)
-
-private fun matchesIconQuery(iconName: String, query: String): Boolean {
-    if (iconName.contains(query, ignoreCase = true)) return true
-    return ICON_ALIASES[iconName]?.any { it.contains(query, ignoreCase = true) } == true
-}
-
-/** 账户信息块：名称（必填）+ 备注 */
-@Composable
-private fun AccountInfoBlock(
-    name: String,
-    onNameChange: (String) -> Unit,
-    nameError: String?,
-    subName: String,
-    onSubNameChange: (String) -> Unit,
+    nameLength: Int,
     focus: AccountFocus,
 ) {
     Column {
         IjiFormSectionTitle("账户信息")
         IjiFormCard {
-            Column(Modifier.padding(16.dp)) {
-                // 字段名与字数分列两端，字数不单独占一行
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FieldLabel("账户名称 *", Modifier.weight(1f))
-                    Text(
-                        "${name.length}/$NAME_MAX",
-                        modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (name.length >= NAME_MAX) MiuixPrimary else TextSecondary,
-                    )
-                }
-                IjiFormTextField(
-                    value = name,
-                    onValueChange = onNameChange,
-                    modifier = Modifier.focusRequester(focus.name),
-                    placeholder = "微信、招商银行",
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { focus.subName.requestFocus() }),
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 图标即按钮：png 素材裁圆后图形充满，整个图标可点，点击弹图标选择弹层。
+                // clip 放在 clickable 之前，水波纹被裁成与图标同大小的圆形
+                AccountIconImage(
+                    iconKey = iconKey,
+                    size = ICON_HEADER_SIZE,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onPickIcon)
+                        .semantics { contentDescription = "更换图标，当前：$iconKey" },
                 )
-                if (nameError != null) {
-                    Text(
-                        nameError,
-                        modifier = Modifier
-                            .padding(start = 4.dp, top = 8.dp, bottom = 2.dp)
-                            // 错误出现时由读屏播报
-                            .semantics { liveRegion = LiveRegionMode.Polite },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AppleRed,
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    // 字段名与字数分列两端，字数不单独占一行
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FieldLabel("账户名称 *", Modifier.weight(1f))
+                        Text(
+                            "$nameLength/$NAME_MAX",
+                            modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (nameLength >= NAME_MAX) MiuixPrimary else TextSecondary,
+                        )
+                    }
+                    IjiFormTextField(
+                        value = name,
+                        onValueChange = onNameChange,
+                        modifier = Modifier.focusRequester(focus.name),
+                        placeholder = "微信、招商银行",
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { focus.balance.requestFocus() }),
                     )
+                    if (nameError != null) {
+                        Text(
+                            nameError,
+                            modifier = Modifier
+                                .padding(start = 4.dp, top = 8.dp, bottom = 2.dp)
+                                // 错误出现时由读屏播报
+                                .semantics { liveRegion = LiveRegionMode.Polite },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AppleRed,
+                        )
+                    }
                 }
-            }
-            IjiFormDivider()
-            Column(Modifier.padding(16.dp)) {
-                FieldLabel("备注（可选）")
-                IjiFormTextField(
-                    value = subName,
-                    onValueChange = onSubNameChange,
-                    modifier = Modifier.focusRequester(focus.subName),
-                    placeholder = "零钱、工资卡",
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { focus.balance.requestFocus() }),
-                )
             }
         }
     }
 }
 
-/** 余额块：金额 + 计入净资产开关 */
+/** 余额卡：金额 + 计入净资产开关 */
 @Composable
-private fun BalanceBlock(
+private fun BalanceCard(
     isEditing: Boolean,
     balanceInput: String,
     onBalanceChange: (String) -> Unit,
     focus: AccountFocus,
     includeInNetWorth: Boolean,
     onIncludeChange: (Boolean) -> Unit,
-    onSubmit: () -> Unit,
 ) {
     Column {
         IjiFormSectionTitle("余额")
@@ -670,9 +516,9 @@ private fun BalanceBlock(
                     placeholder = "0.00",
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Decimal,
-                        imeAction = ImeAction.Done,
+                        imeAction = ImeAction.Next,
                     ),
-                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+                    keyboardActions = KeyboardActions(onNext = { focus.subName.requestFocus() }),
                 )
                 HintText("不填按 0 处理；负债账户可填负数，如信用卡 -1200")
                 if (isEditing) {
@@ -697,183 +543,26 @@ private fun BalanceBlock(
     }
 }
 
-/** 图标区头部：标题 + 分类（新建可切 / 编辑只读）+ 搜索，顶边圆角与网格行拼成一张卡 */
+/** 备注卡：低频字段放最后，不打断「名称 → 余额」主流程 */
 @Composable
-private fun IconPickerHeader(
-    isEditing: Boolean,
-    selectedType: AccountType,
-    onSelectType: (AccountType) -> Unit,
-    resolvedLabel: String,
-    iconKey: String,
-    iconCount: Int,
-    searchQuery: String,
-    onSearchChange: (String) -> Unit,
+private fun SubNameCard(
+    subName: String,
+    onSubNameChange: (String) -> Unit,
+    focus: AccountFocus,
+    onSubmit: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = Radius.sheet, topEnd = Radius.sheet))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "账户图标",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "$iconCount 个",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "当前：$iconKey",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
-        if (isEditing) {
-            // 编辑态不给切分类：分类随图标自动归类，避免「银行账户挂支付宝图标」的矛盾
-            Text(
-                "分类随图标自动归类：$resolvedLabel",
-                style = MaterialTheme.typography.bodySmall,
-                color = MiuixPrimary,
-            )
-        } else {
-            IjiCategoryChips(
-                items = AccountType.entries,
-                selected = selectedType,
-                onSelect = onSelectType,
-                labelOf = { it.label },
-            )
-        }
-
-        Column {
-            IjiFormTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                placeholder = "搜索图标或简称",
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            )
-            HintText("支持「招行」「zsyh」这类简称")
-        }
-    }
-}
-
-/** 一行图标：等宽单元格，末行收底部圆角并补空位 */
-@Composable
-private fun IconRow(
-    icons: List<String>,
-    selected: String,
-    columns: Int,
-    last: Boolean,
-    onPick: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(
-                if (last) RoundedCornerShape(bottomStart = Radius.sheet, bottomEnd = Radius.sheet)
-                else RoundedCornerShape(0.dp),
-            )
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        icons.forEach { icon ->
-            IconCell(
-                iconName = icon,
-                selected = icon == selected,
-                modifier = Modifier.weight(1f),
-                onClick = { onPick(icon) },
-            )
-        }
-        // 末行不足时补空位，保证每格等宽
-        repeat(columns - icons.size) { Spacer(Modifier.weight(1f)) }
-    }
-}
-
-/** 无匹配图标：与网格同色同圆角，避免卡片断层 */
-@Composable
-private fun EmptyIconRow() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(bottomStart = Radius.sheet, bottomEnd = Radius.sheet))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(vertical = 28.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "没有匹配的图标，换个关键词或分类试试",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
-/** 图标单元：选中态 = 主色描边 + 右上角勾 */
-@Composable
-private fun IconCell(
-    iconName: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(Radius.lg)
-    Box(
-        modifier = modifier
-            .padding(2.dp)
-            .clip(shape)
-            .background(
-                if (selected) MiuixPrimary.copy(alpha = 0.10f)
-                else MaterialTheme.colorScheme.surface,
-            )
-            // 可访问性：告诉读屏软件这是单选组里的一项，并播报图标名
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "图标：$iconName" }
-            .then(
-                if (selected) Modifier.border(1.5.dp, MiuixPrimary, shape) else Modifier,
-            )
-            .padding(vertical = 6.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            AccountIconImage(iconKey = iconName, size = 34.dp)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                iconName,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (selected) MiuixPrimary else MaterialTheme.colorScheme.onSurface,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
-        if (selected) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 2.dp, end = 4.dp)
-                    .size(14.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(MiuixPrimary),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "✓",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.85f,
+    Column {
+        IjiFormSectionTitle("备注")
+        IjiFormCard {
+            Column(Modifier.padding(16.dp)) {
+                FieldLabel("备注（可选）")
+                IjiFormTextField(
+                    value = subName,
+                    onValueChange = onSubNameChange,
+                    modifier = Modifier.focusRequester(focus.subName),
+                    placeholder = "零钱、工资卡",
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
                 )
             }
         }

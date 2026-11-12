@@ -135,7 +135,9 @@ fun FontSizeScreen(
                         valueRange = FontScaleState.MIN_SP..FontScaleState.MAX_SP,
                         // 12..24 每 1sp 一档（13 档）
                         steps = 11,
-                        // HyperOS 离散滑块视觉：每个档位画一个键点，跨档给一次触感反馈
+                        // 只在基准档（16sp）留一个键点：铺 13 个点视觉太碎，
+                        // 档位吸附仍由 steps 保证，键点只做「默认值在这」的参照
+                        keyPoints = listOf(FontScaleState.BASE_SP),
                         showKeyPoints = true,
                         hapticEffect = SliderDefaults.SliderHapticEffect.Step,
                     )

@@ -3,9 +3,12 @@
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,7 +18,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.iji.app.budget.NotificationHelper
@@ -25,6 +34,7 @@ import com.iji.app.reminder.SuperIslandNotifier
 import com.iji.app.ui.FontScaleState
 import com.iji.app.ui.HapticsState
 import com.iji.app.ui.PerfState
+import com.iji.app.ui.components.IjiSettingDropdownValue
 import com.iji.app.ui.components.IjiSettingSwitch
 import com.iji.app.ui.components.IjiSettingValue
 import com.iji.app.ui.components.IjiSettingsDivider
@@ -33,6 +43,10 @@ import com.iji.app.ui.components.IjiSettingsSection
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.WheelOptionDialog
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenu
+import com.iji.app.ui.components.menu.LiquidGlassDropdownMenuItem
+import com.iji.app.ui.components.menu.LiquidGlassDropdownOverlayHost
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.ThemeState
 import com.iji.app.ui.util.PredictiveBackSettings
@@ -40,8 +54,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 页面里需要滚轮选择器的四类取值（同一时刻只会开一个） */
-private enum class Picker { Theme, Hour, WeekStart, MonthStart }
+/** 页面里需要滚轮选择器的取值（同一时刻只会开一个）——选项少的（主题/周开始日）走浮层卡片 */
+private enum class Picker { Hour, MonthStart }
 
 private val THEME_VALUES = listOf("system", "light", "dark")
 
@@ -65,13 +79,22 @@ private fun weekStartLabel(day: Int) = if (day == 7) "周日" else "周一"
 fun PreferencesScreen(
     onBack: () -> Unit,
     onFontSize: () -> Unit,
-    onPermissionCheck: () -> Unit,
 ) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
     val scope = rememberCoroutineScope()
 
     var picker by remember { mutableStateOf<Picker?>(null) }
+    // 选项少的（主题颜色 3 项 / 周开始日 2 项）不再开滚轮弹窗，改为行旁浮出的 LiquidGlass 面板。
+    // 锚点bounds / 宿主原点都用**窗口坐标**（popup 层与页面坐标系可能差状态栏高度，见 OverlayHost）
+    var themeCardOpen by remember { mutableStateOf(false) }
+    var weekStartCardOpen by remember { mutableStateOf(false) }
+    val themeAnchorBounds = remember { mutableStateOf(Rect.Zero) }
+    val weekAnchorBounds = remember { mutableStateOf(Rect.Zero) }
+    val themeMenuFraction = remember { Animatable(0f) }
+    val weekMenuFraction = remember { Animatable(0f) }
+    val themeHostOrigin = remember { mutableStateOf(Offset.Zero) }
+    val weekHostOrigin = remember { mutableStateOf(Offset.Zero) }
 
     // 外观
     var theme by remember { mutableStateOf(SettingsRepository.getString(context, "theme_mode", "system")) }
@@ -91,6 +114,13 @@ fun PreferencesScreen(
 
     // 时间
     var is24Hour by remember { mutableStateOf(SettingsRepository.getBoolean(context, "is_24_hour", true)) }
+    // 应用更新：与 UpdateFlow 读的是同一组键，能开就要能关
+    var autoCheckUpdate by remember {
+        mutableStateOf(SettingsRepository.getBoolean(context, SettingsRepository.KEY_AUTO_CHECK_UPDATE, true))
+    }
+    var updateReminder by remember {
+        mutableStateOf(SettingsRepository.getBoolean(context, SettingsRepository.KEY_UPDATE_REMINDER, true))
+    }
     var weekStartDay by remember { mutableStateOf(SettingsRepository.getInt(context, "week_start_day", 1)) }
     var monthStartDay by remember { mutableStateOf(SettingsRepository.getInt(context, "month_start_day", 1)) }
 
@@ -132,12 +162,48 @@ fun PreferencesScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             IjiSettingsSection("外观") {
-                IjiSettingsRow("主题颜色", onClick = { picker = Picker.Theme }) {
-                    IjiSettingValue(themeLabel(theme))
+                // 主题颜色：LiquidGlass 浮层面板（与全站下拉同款），3 个选项不再弹滚轮。
+                // 锚点用 **窗口坐标**（boundsInWindow）+ 宿主原点修正：popup 层与页面的
+                // 坐标系可能差一个状态栏高度，positionInRoot 会错位（实测）。
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { themeAnchorBounds.value = it.boundsInWindow() },
+                ) {
+                    IjiSettingsRow("主题颜色", onClick = { themeCardOpen = !themeCardOpen }) {
+                        IjiSettingDropdownValue(
+                            themeLabel(theme),
+                            modifier = Modifier.graphicsLayer {
+                                // 一镜到底（NexioSchedule）：面板从本值芯片长出，值文字+箭头
+                                // 随 fraction 向面板内部（左下）漂移淡出；收起更早浮现
+                                val iconK = if (themeCardOpen) 2.5f else 1.7f
+                                val p = (themeMenuFraction.value * iconK).coerceIn(0f, 1f)
+                                alpha = 1f - p
+                                translationX = -p * 10.dp.toPx()
+                                translationY = p * 10.dp.toPx()
+                            },
+                        )
+                    }
                 }
                 IjiSettingsDivider()
                 IjiSettingsRow("字体大小", onClick = onFontSize) {
                     IjiSettingValue("${FontScaleState.label()} ${FontScaleState.fontSizeSp.toInt()}sp")
+                }
+            }
+
+            IjiSettingsSection("应用更新") {
+                IjiSettingsRow("自动检查更新", subtitle = "每天首次进入应用时检查一次新版本") {
+                    IjiSettingSwitch(autoCheckUpdate) { on ->
+                        autoCheckUpdate = on
+                        SettingsRepository.setBoolean(context, SettingsRepository.KEY_AUTO_CHECK_UPDATE, on)
+                    }
+                }
+                IjiSettingsDivider()
+                IjiSettingsRow("发现新版本时提醒", subtitle = "关闭后仍会检查，但不弹更新提示") {
+                    IjiSettingSwitch(updateReminder) { on ->
+                        updateReminder = on
+                        SettingsRepository.setBoolean(context, SettingsRepository.KEY_UPDATE_REMINDER, on)
+                    }
                 }
             }
 
@@ -180,10 +246,6 @@ fun PreferencesScreen(
                 }
                 IjiSettingsDivider()
                 IjiSettingsRow("发送测试通知", subtitle = "按当前设置立即试发一条", onClick = sendTestNotification) {
-                    IjiSettingValue()
-                }
-                IjiSettingsDivider()
-                IjiSettingsRow("权限检验", subtitle = "通知 / 保活 / Shizuku / 无障碍", onClick = onPermissionCheck) {
                     IjiSettingValue()
                 }
             }
@@ -237,8 +299,25 @@ fun PreferencesScreen(
                     }
                 }
                 IjiSettingsDivider()
-                IjiSettingsRow("周开始日", onClick = { picker = Picker.WeekStart }) {
-                    IjiSettingValue(weekStartLabel(weekStartDay))
+                // 周开始日：只有 2 个选项，同样走 LiquidGlass 浮层面板（窗口坐标锚点）
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { weekAnchorBounds.value = it.boundsInWindow() },
+                ) {
+                    IjiSettingsRow("周开始日", onClick = { weekStartCardOpen = !weekStartCardOpen }) {
+                        IjiSettingDropdownValue(
+                            weekStartLabel(weekStartDay),
+                            modifier = Modifier.graphicsLayer {
+                                // 一镜到底（NexioSchedule）：同主题颜色行
+                                val iconK = if (weekStartCardOpen) 2.5f else 1.7f
+                                val p = (weekMenuFraction.value * iconK).coerceIn(0f, 1f)
+                                alpha = 1f - p
+                                translationX = -p * 10.dp.toPx()
+                                translationY = p * 10.dp.toPx()
+                            },
+                        )
+                    }
                 }
                 IjiSettingsDivider()
                 IjiSettingsRow("月开始日", onClick = { picker = Picker.MonthStart }) {
@@ -262,22 +341,84 @@ fun PreferencesScreen(
         }
     }
 
-    // ── 四个滚轮选择器（同一时刻只显示一个）──
+    // ── LiquidGlass 浮层面板（主题颜色 / 周开始日）：popup 层，锚点窗口坐标 − 宿主原点 ──
+    val prefsBackdrop = LocalAppBackdrop.current
+    if (prefsBackdrop != null) {
+        // 主题颜色：面板挂在行下方，右缘对齐行右缘
+        LiquidGlassDropdownOverlayHost(expanded = themeCardOpen, onOutsideTap = { themeCardOpen = false }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { themeHostOrigin.value = it.positionInWindow() },
+            ) {
+                LiquidGlassDropdownMenu(
+                    show = themeCardOpen,
+                    backdrop = prefsBackdrop,
+                    fraction = themeMenuFraction,
+                    onDismiss = { themeCardOpen = false },
+                    modifier = Modifier
+                        .graphicsLayer {
+                            val b = themeAnchorBounds.value
+                            // 覆盖式（End）：控制盒**右上角**恒 = 行右缘 + 26dp——面板从行首
+                            // 位置向左下生长覆盖整行，收起缩回行位置与行内容衔接
+                            alpha = (themeMenuFraction.value.coerceAtLeast(0f) / 0.3f).coerceIn(0f, 1f)
+                            translationX = b.right + 26.dp.toPx() - size.width - themeHostOrigin.value.x
+                            translationY = b.top - 26.dp.toPx() - themeHostOrigin.value.y
+                        },
+                ) {
+                    THEME_VALUES.forEach { value ->
+                        LiquidGlassDropdownMenuItem(
+                            text = themeLabel(value),
+                            selected = value == theme,
+                            onClick = {
+                                themeCardOpen = false
+                                theme = value
+                                SettingsRepository.setString(context, "theme_mode", value)
+                                ThemeState.themeMode = value
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        // 周开始日：同款，面板挂在行下方
+        LiquidGlassDropdownOverlayHost(expanded = weekStartCardOpen, onOutsideTap = { weekStartCardOpen = false }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { weekHostOrigin.value = it.positionInWindow() },
+            ) {
+                LiquidGlassDropdownMenu(
+                    show = weekStartCardOpen,
+                    backdrop = prefsBackdrop,
+                    fraction = weekMenuFraction,
+                    onDismiss = { weekStartCardOpen = false },
+                    modifier = Modifier
+                        .graphicsLayer {
+                            val b = weekAnchorBounds.value
+                            // 覆盖式（End）：同主题颜色（控制盒右上角恒 = 行右缘 + 26dp）
+                            alpha = (weekMenuFraction.value.coerceAtLeast(0f) / 0.3f).coerceIn(0f, 1f)
+                            translationX = b.right + 26.dp.toPx() - size.width - weekHostOrigin.value.x
+                            translationY = b.top - 26.dp.toPx() - weekHostOrigin.value.y
+                        },
+                ) {
+                    listOf(1, 7).forEach { day ->
+                        LiquidGlassDropdownMenuItem(
+                            text = weekStartLabel(day),
+                            selected = day == weekStartDay,
+                            onClick = {
+                                weekStartCardOpen = false
+                                weekStartDay = day
+                                SettingsRepository.setInt(context, "week_start_day", day)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
 
-    WheelOptionDialog(
-        show = picker == Picker.Theme,
-        options = THEME_VALUES,
-        selected = theme,
-        title = "主题颜色",
-        label = { themeLabel(it) },
-        onDismissRequest = { picker = null },
-        onConfirm = { value ->
-            picker = null
-            theme = value
-            SettingsRepository.setString(context, "theme_mode", value)
-            ThemeState.themeMode = value
-        },
-    )
+    // ── 滚轮选择器（选项多：时刻 24 档 / 月开始日 28 档）；主题与周开始日已改浮层卡片 ──
 
     WheelOptionDialog(
         show = picker == Picker.Hour,
@@ -290,20 +431,6 @@ fun PreferencesScreen(
             picker = null
             reminderHour = hour
             ReminderScheduler.setHour(context, hour)
-        },
-    )
-
-    WheelOptionDialog(
-        show = picker == Picker.WeekStart,
-        options = listOf(1, 7),
-        selected = weekStartDay,
-        title = "周开始日",
-        label = { weekStartLabel(it) },
-        onDismissRequest = { picker = null },
-        onConfirm = { day ->
-            picker = null
-            weekStartDay = day
-            SettingsRepository.setInt(context, "week_start_day", day)
         },
     )
 

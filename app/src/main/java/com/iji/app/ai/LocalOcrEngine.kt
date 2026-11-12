@@ -10,13 +10,7 @@ import kotlin.coroutines.resume
 /**
  * 小票 OCR **本地**引擎（ML Kit 中文文字识别）。
  *
- * 为什么要有本地这一条腿：云端识别依赖用户自己配 API Key，未配置时
- * [AiBookkeepingService.parseBillFromImage] 直接返回 null —— 整个小票识别功能等于不可用；
- * 而小票金额恰恰是**离线也能搞定**的纯本地任务。因此改为「本地优先、云端兜底」：
- *
- * - 本地能解析出金额 → 立刻出结果，不联网、零延迟、**图片不出设备**（隐私更好）
- * - 本地解析不出（版式太复杂 / 模糊）→ 再走云端视觉模型兜底
- *
+ * 离线、图片不出设备：AI 不可用或「图片识别用 AI」关着时只跑这里，开关开着且模型失败也回落到这里。
  * 识别+解析均为纯函数式流程，不依赖任何 Android 组件（除 Bitmap），便于单测。
  */
 object LocalOcrEngine {
@@ -82,7 +76,9 @@ object LocalOcrEngine {
 
         // 先走「提示词与规则」页里可编辑的本地规则：用户改了分类词表，本机 OCR 也立刻跟着变。
         // 没命中再退回下面两张小票专用词表（它们比通用规则更细，如「米线/烘焙/影城」）。
-        val matched = LocalRuleEngine.match(joined, LocalRuleStore.rules())
+        // OCR 金额（分）折成元喂给引擎的「金额范围」条件；认不出金额时规则仍可命中，
+        // 只有设了金额条件的规则会被拦下（语义见 LocalRule.matchesAmount）。
+        val matched = LocalRuleEngine.match(joined, LocalRuleStore.rules(), amount / 100.0)
         val ruleType = matched?.rule?.type?.takeIf { it != LocalRule.TYPE_ANY }
 
         val type = ruleType ?: if (incomeCat != null) "income" else "expense"
@@ -95,6 +91,7 @@ object LocalOcrEngine {
             note = pickMerchant(lines),
             accountHint = matched?.rule?.account?.takeIf { it.isNotBlank() } ?: pickAccount(joined),
             tags = emptyList(),
+            source = AiBookkeepingService.SOURCE_LOCAL_OCR,
         )
     }
 

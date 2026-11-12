@@ -68,29 +68,26 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
- * 数据与备份页。
+ * 数据与备份页：只管「自己的备份」，一级入口固定三个。
  *
- * 两块分组，与「我的」其他设置页同一套「小标题 + 卡片」：
- * - **导入**：从备份恢复（全量 / 仅配置 / 本机加密备份，选文件后先预览再确认）、
- *   导入账单（CSV / 微信 / 支付宝 / 整屏截图，独立子页 [BillImportScreen]）。
- *   账单导入原先挂在「自动记账」里，但它属于数据导入，和备份恢复同一类动作，
- *   藏进弹窗更不合适——现在是一级入口。
- * - **备份与导出**：导出（全量 / 仅配置 / 账单 CSV × 下载目录 / 自选位置）、
- *   网盘备份（独立子页 [CloudBackupScreen]：配置 / 上传 / 恢复 / 自动备份都在那边）。
+ * - **导出数据备份**：全量 / 仅配置 JSON，下载目录或自选位置。
+ * - **将备份的导入**：自动识别全量 / 流水 / 配置三类备份，先预览再确认；
+ *   还原走 `BackupManager.restoreSnapshot` 或 `ConfigBackupRepository.importJson`。
+ * - **网盘备份**：独立子页 [CloudBackupScreen]（配置 / 上传 / 恢复 / 自动备份）。
  *
- * 刻意没回到主页的：每日自动备份与「立即备份」——它们做的是本机加密备份 + 上传网盘，
- * 没有网盘就没有意义，不该在主页出现第二个说法。
+ * 账单 CSV 的导入与导出都不属于数据备份：统一走 [BillImportScreen]，
+ * 入口在「我的 → 数据与备份 → 账单导入/导出」。
+ * 页尾「删除账单」是历史遗留的账单管理快捷行，不是备份入口。
  */
 @Composable
 fun BackupSettingsScreen(
     onBack: () -> Unit,
-    /** 导入账单（CSV / 微信 / 支付宝 / 截图）独立子页 */
-    onNavigateBillImport: () -> Unit = {},
     /** 网盘备份是独立子页（配置 / 上传 / 恢复 / 自动备份都在那边） */
     onNavigateCloudBackup: () -> Unit = {},
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -99,6 +96,7 @@ fun BackupSettingsScreen(
     // ── 页头状态 ──
     var backups by remember { mutableStateOf<List<File>>(emptyList()) }
     var lastBackupAt by remember { mutableStateOf(0L) }
+    var lastCloudUploadAt by remember { mutableStateOf(0L) }
     var totalSize by remember { mutableStateOf(0L) }
     var busy by remember { mutableStateOf(false) }
 
@@ -128,6 +126,7 @@ fun BackupSettingsScreen(
         backups = BackupManager.listBackups(context)
         lastBackupAt = BackupManager.latestBackupTime(context)
         totalSize = BackupManager.totalSize(context)
+        lastCloudUploadAt = CloudBackupManager.lastUploadAt(context)
     }
 
     LaunchedEffect(Unit) {
@@ -150,24 +149,32 @@ fun BackupSettingsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // ── 导入：读取文件 → 识别类型 → 预览 ──
+    // ── 导入：读取文件（明文 JSON 或本机加密的 .ijbak）→ 识别类型 → 预览 ──
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
             busy = true
-            val text = withContext(Dispatchers.IO) {
+            // 必须按字节读：加密备份是二进制，用 Reader 读会把密文糟蹋成无意义的字符
+            val bytes = withContext(Dispatchers.IO) {
                 runCatching {
-                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 }.getOrNull()
             }
+            val text = bytes?.let { withContext(Dispatchers.IO) { BackupManager.decodeSnapshot(it) } }
             busy = false
-            if (text.isNullOrBlank()) {
-                snackbar.show("读取文件失败")
+            if (bytes == null || text.isNullOrBlank()) {
+                // text == null 只可能是「加密备份但解不开」，这个原因必须说清楚
+                val message = if (bytes != null && text == null) {
+                    "解密失败：这份备份不是本机密钥加密的（换设备后无法还原本机备份），请改用配置备份"
+                } else {
+                    "读取文件失败"
+                }
+                snackbar.show(message)
                 return@launch
             }
             val preview = runCatching { describeImport(text) }.getOrNull()
             if (preview == null) {
-                snackbar.show("无法识别的文件：既不是备份，也不是账单数据")
+                snackbar.show("无法识别为备份文件（支持全量 / 流水 / 配置）。账单 CSV 请到「设置 → 账单导入/导出」")
                 return@launch
             }
             // 先收起入口面板再弹确认：两个 Dialog 同时 show 时后一个不会正常渲染
@@ -199,20 +206,12 @@ fun BackupSettingsScreen(
         }
     }
 
-    /** 生成导出内容（明文 JSON 或 CSV） */
+    /** 生成备份内容（明文 JSON）：账单 CSV 导出已移到「账单导入/导出」页 */
     suspend fun buildExportText(content: ExportContent): Pair<String, String>? =
         runCatching {
             when (content) {
                 ExportContent.FULL -> "application/json" to BackupManager.buildSnapshot(context)
                 ExportContent.CONFIG -> "application/json" to ConfigBackupRepository.exportJson(context)
-                ExportContent.BILLS -> {
-                    val rows = withContext(Dispatchers.IO) { viewModel.transactionsForExport() }
-                    val csv = viewModel.backupRepository.toCsv(
-                        rows,
-                        com.iji.app.data.model.CurrencyDisplay.current.code,
-                    )
-                    "text/csv" to csv
-                }
             }
         }.getOrNull()
 
@@ -283,11 +282,12 @@ fun BackupSettingsScreen(
         ) {
             item { Spacer(Modifier.height(8.dp)) }
 
-            // ── 状态：一眼看清"上次备份是什么时候、有没有网盘" ──
+            // ── 状态：本机与网盘的备份记录都算「备份过」 ──
             item {
                 SurfaceCard {
+                    val lastAnyBackupAt = maxOf(lastBackupAt, lastCloudUploadAt)
                     Text(
-                        if (lastBackupAt > 0) "上次备份 ${formatTime(lastBackupAt)}"
+                        if (lastAnyBackupAt > 0) "上次备份 ${formatTime(lastAnyBackupAt)}"
                         else "还没有备份过",
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
@@ -298,7 +298,13 @@ fun BackupSettingsScreen(
                             append("本机 ${backups.size} 份 · ")
                             append("%.1f MB".format(totalSize / 1024f / 1024f))
                             append("　|　网盘")
-                            append(if (cloudConfigured) "已配置" else "未配置")
+                            append(
+                                when {
+                                    lastCloudUploadAt > 0 -> "已备份 ${formatShortTime(lastCloudUploadAt)}"
+                                    cloudConfigured -> "已配置"
+                                    else -> "未配置"
+                                },
+                            )
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
@@ -306,31 +312,18 @@ fun BackupSettingsScreen(
                 }
             }
 
-            // ── 导入：备份恢复与账单导入是两件事，各自一个入口 ──
-            // 以前「导入账单」藏在「导入数据」弹窗里，用户得先点开面板才发现；
-            // 从「自动记账」挪过来之后直接作为一级入口，和备份恢复并列。
+            // ── 数据备份：只留三个一级入口，账单导入已移到设置页 ──
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SmallTitle(text = "导入", insideMargin = PaddingValues(0.dp))
+                    SmallTitle(text = "数据备份", insideMargin = PaddingValues(0.dp))
                     EntryCard(
-                        title = "从备份恢复",
-                        subtitle = "全量备份 / 仅配置 / 本机加密备份（.ijbak）",
-                    ) { showImportPanel = true }
-                    EntryCard(
-                        title = "导入账单",
-                        subtitle = "CSV / 微信 / 支付宝账单，或整屏截图批量识别",
-                    ) { onNavigateBillImport() }
-                }
-            }
-
-            // ── 备份与导出 ──
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SmallTitle(text = "备份与导出", insideMargin = PaddingValues(0.dp))
-                    EntryCard(
-                        title = "导出数据",
-                        subtitle = "全量备份 / 仅配置 / 账单 CSV，可存到下载目录",
+                        title = "导出数据备份",
+                        subtitle = "全量备份 / 仅配置，可存到下载目录或自选位置",
                     ) { showExportPanel = true }
+                    EntryCard(
+                        title = "将备份的导入",
+                        subtitle = "全量 / 流水 / 配置，自动识别后先预览再还原",
+                    ) { showImportPanel = true }
                     EntryCard(
                         title = "网盘备份",
                         subtitle = if (cloudConfigured) {
@@ -374,12 +367,12 @@ fun BackupSettingsScreen(
         }
     }
 
-    // ══════════════════ 导入面板 ══════════════════
+    // ══════════════════ 将备份的导入 ══════════════════
     IjiDialog(
         show = showImportPanel,
         onDismissRequest = { showImportPanel = false },
-        title = "从备份恢复",
-        summary = "备份文件会自动识别内容，先预览再执行。账单文件请走「导入账单」。",
+        title = "将备份的导入",
+        summary = "自动识别全量 / 流水 / 配置三类备份，先预览再执行。账单 CSV 请到「设置 → 账单导入/导出」。",
         confirmText = "完成",
         showDismiss = false,
         onConfirm = { showImportPanel = false },
@@ -390,7 +383,10 @@ fun BackupSettingsScreen(
                 .heightIn(max = 420.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
-            PanelAction("从文件导入备份…", "支持全量备份、仅配置备份，以及旧版流水 JSON") {
+            PanelAction(
+                "从文件导入备份…",
+                "支持全量 / 流水 / 配置备份，以及本机加密备份（.ijbak，只能在本机解密）",
+            ) {
                 importPicker.launch(arrayOf("application/json", "text/plain", "*/*"))
             }
 
@@ -459,8 +455,8 @@ fun BackupSettingsScreen(
     IjiDialog(
         show = showExportPanel,
         onDismissRequest = { showExportPanel = false },
-        title = "导出数据",
-        summary = "选内容与位置，点「导出」直接写文件，不再二次确认。",
+        title = "导出数据备份",
+        summary = "只导出备份（全量 / 仅配置），选内容与位置后直接写文件。账单 CSV 请到「设置 → 账单导入/导出」。",
         dismissText = "关闭",
         confirmText = "导出",
         confirmEnabled = !busy,
@@ -494,15 +490,6 @@ fun BackupSettingsScreen(
                 title = "选择保存位置…",
                 subtitle = "弹出系统文件选择器，可存到网盘 App / SD 卡",
             ) { exportToDownloads = false }
-
-            if (exportContent == ExportContent.BILLS) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "只导出当前账本的账单（CSV，14 列含币种），配置不会被导出。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-            }
         }
     }
 
@@ -536,11 +523,10 @@ fun BackupSettingsScreen(
 
 // ══════════════════ 数据模型与工具 ══════════════════
 
-/** 导出内容选项 */
+/** 备份导出内容选项（账单 CSV 已移到「账单导入/导出」页） */
 private enum class ExportContent(val label: String, val hint: String) {
     FULL("全量备份（配置 + 全部流水）", "换机、误删都能救，体积最大"),
     CONFIG("仅配置（分类 / 账户 / 预算等）", "不含流水，体积小，适合只搬设置"),
-    BILLS("账单 CSV（当前账本）", "Excel 可直接打开，14 列含币种"),
 }
 
 /** 导入内容的形态：决定走哪套还原逻辑 */
@@ -569,13 +555,14 @@ private data class PendingImport(
 )
 
 /**
- * 识别一段文本是哪种备份，并生成人类可读的预览。
+ * 识别一段文本是哪类备份，并生成人类可读的预览。
  *
- * 四种实际形态（都要能导入，否则用户手里不同来源的备份就会有一半打不开）：
+ * 对外只说三类：全量 / 流水 / 配置。实际落盘形态有四种（多一种「带壳配置」），
+ * 都要能导入，否则用户手里不同来源的备份就会有一半打不开：
  * 1. 全量快照：有 `transactions` + `config`
- * 2. 带壳的仅配置（网盘上传的那种）：有 `config`、无 `transactions`
+ * 2. 带壳的配置（网盘上传的那种）：有 `config`、无 `transactions`
  * 3. 裸配置（导出「仅配置」得到的）：字段平铺，有 `categories`/`accounts`/`ledgers`
- * 4. 旧版流水数组：顶层就是 JSONArray
+ * 4. 纯流水数组（旧版备份）：顶层就是 JSONArray
  */
 private fun describeImport(text: String): PendingImport {
     val obj = runCatching { JSONObject(text) }.getOrNull()
@@ -593,7 +580,7 @@ private fun describeImport(text: String): PendingImport {
 
             cfg != null -> PendingImport(
                 source = "",
-                detail = "仅配置备份：不含流水，只还原分类/账户/预算等设置",
+                detail = "配置备份：不含流水，只还原分类/账户/预算等设置",
                 snapshot = text,
                 kind = ImportKind.SNAPSHOT,
             )
@@ -601,7 +588,7 @@ private fun describeImport(text: String): PendingImport {
             obj.has("categories") || obj.has("accounts") || obj.has("ledgers") || obj.has("tags") ->
                 PendingImport(
                     source = "",
-                    detail = "仅配置备份：不含流水，只还原分类/账户/预算等设置",
+                    detail = "配置备份：不含流水，只还原分类/账户/预算等设置",
                     snapshot = text,
                     kind = ImportKind.CONFIG,
                 )
@@ -610,12 +597,12 @@ private fun describeImport(text: String): PendingImport {
             else -> error("无法识别的备份结构")
         }
     }
-    // 旧版：纯流水数组
+    // 纯流水备份（旧版数组）
     val arr = runCatching { JSONArray(text) }.getOrNull()
         ?: error("不是 JSON")
     return PendingImport(
         source = "",
-        detail = "旧版备份：$arr.length() 条流水（不含配置）",
+        detail = "流水备份：${arr.length()} 条流水（不含配置）",
         snapshot = JSONObject().apply { put("transactions", arr) }.toString(),
         kind = ImportKind.LEGACY_TX,
     )
@@ -627,7 +614,6 @@ private fun defaultExportName(content: ExportContent): String {
     return when (content) {
         ExportContent.FULL -> "iji_backup_$date.json"
         ExportContent.CONFIG -> "iji_config_$date.json"
-        ExportContent.BILLS -> "iji_账单_$date.csv"
     }
 }
 
@@ -706,5 +692,9 @@ private fun PanelAction(title: String, subtitle: String, onClick: () -> Unit) {
 
 private fun formatTime(millis: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
+
+/** 状态卡副行空间有限，只显示月日时分 */
+private fun formatShortTime(millis: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
 
 /** 文件显示名已抽到 components 的 [safeDisplayName]，导入记录与备份导入共用一份实现 */

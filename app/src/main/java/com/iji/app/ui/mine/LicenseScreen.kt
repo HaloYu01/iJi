@@ -181,7 +181,7 @@ fun LicenseScreen(
                 Text(
                     text = "以上组件均按其原始许可证使用，本应用不对第三方组件作任何担保。" +
                         "需要各许可证全文时，可在对应项目仓库查看，也可通过「关于应用 - 问题反馈」向作者索取。\n\n" +
-                        "如果你认为本应用某处使用侵犯了你的权利，请联系 feedback@iji.app，我们会尽快核实处理。",
+                        "如果你认为本应用某处使用侵犯了你的权利，请联系 $contactEmail，我们会尽快核实处理。",
                     fontSize = 12.5.sp,
                     lineHeight = 19.sp,
                     color = TextSecondary,

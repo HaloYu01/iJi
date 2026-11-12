@@ -33,6 +33,13 @@ object CapturePreferences {
 
     const val KEY_OVERLAY_STYLE = "screen_capture_overlay_style"
 
+    /** 用户是否要用悬浮窗确认；与系统权限解耦，授予权限后依然可以关掉 */
+    const val KEY_OVERLAY_CONFIRM = "screen_capture_overlay_confirm"
+    /** 识屏倒计时（秒）：给用户留出切到账单页的时间 */
+    const val KEY_CAPTURE_DELAY = "screen_capture_delay_seconds"
+
+    val DELAY_OPTIONS_SECONDS = listOf(3, 5)
+
     fun mode(context: Context): String =
         SettingsRepository.getString(context, KEY_MODE, MODE_AUTO)
 
@@ -48,6 +55,25 @@ object CapturePreferences {
         SettingsRepository.setString(context, KEY_OVERLAY_STYLE, style)
     }
 
+    /** 默认 true：保持旧行为（有系统权限就弹悬浮窗）；用户可在应用内单独关掉 */
+    fun overlayConfirmEnabled(context: Context): Boolean =
+        SettingsRepository.getBoolean(context, KEY_OVERLAY_CONFIRM, true)
+
+    fun setOverlayConfirmEnabled(context: Context, enabled: Boolean) {
+        SettingsRepository.setBoolean(context, KEY_OVERLAY_CONFIRM, enabled)
+    }
+
+    fun captureDelaySeconds(context: Context): Int =
+        SettingsRepository.getInt(context, KEY_CAPTURE_DELAY, 3)
+
+    fun setCaptureDelaySeconds(context: Context, seconds: Int) {
+        SettingsRepository.setInt(context, KEY_CAPTURE_DELAY, seconds)
+    }
+
+    /** 倒计时毫秒，钳在 1..10 秒防脏数据 */
+    fun captureDelayMs(context: Context): Long =
+        captureDelaySeconds(context).coerceIn(1, 10) * 1000L
+
     fun volumeKeyEnabled(context: Context): Boolean =
         SettingsRepository.getBoolean(context, KEY_VOLUME_KEY, false)
 
@@ -56,7 +82,7 @@ object CapturePreferences {
     }
 
     /**
-     * 按偏好 + 当前可用性挑出真正能用的方式（纯函数，可单测）。
+     * 按偏好 + 当前可用性挑出真正能用的方式。
      *
      * @return [MODE_SHIZUKU] / [MODE_A11Y]；都不可用返回 null
      */

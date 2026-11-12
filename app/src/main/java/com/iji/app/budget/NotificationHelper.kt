@@ -28,7 +28,7 @@ import com.iji.app.ui.components.formatMoney
  * 预算提醒通知。
  *
  * - 独立渠道 `budget_alert`（用户可单独开关，不影响其他通知）
- * - 点击跳转到对应预算详情页（[budgetDetailRoute]）
+ * - 点击打开「我的 → 预算」管理页（原预算详情页已按需求删除）
  * - Android 13+ 需要 POST_NOTIFICATIONS 权限，未授权时静默跳过（不打扰、不崩溃）
  */
 object NotificationHelper {
@@ -111,9 +111,6 @@ object NotificationHelper {
 
     /** MainActivity 读取该 extra 后执行导航（见 AppRoot 的 LaunchedEffect） */
     const val EXTRA_NAV_ROUTE = "nav_route"
-
-    /** 预算详情页路由（需与 AppRoot 中注册的 composable route 一致） */
-    fun budgetDetailRoute(budgetId: Long): String = "budget_detail/$budgetId"
 
     /** 创建全部通知渠道（Android 8+；重复调用幂等） */
     fun createChannels(context: Context) {
@@ -215,7 +212,7 @@ object NotificationHelper {
                 hintTitle = title.take(8),
                 clickIntent = Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra(EXTRA_NAV_ROUTE, budgetDetailRoute(budget.id))
+                    putExtra(EXTRA_NAV_ROUTE, Routes.BUDGET)
                 },
             )
             return true
@@ -226,7 +223,7 @@ object NotificationHelper {
             id,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(EXTRA_NAV_ROUTE, budgetDetailRoute(budget.id))
+                putExtra(EXTRA_NAV_ROUTE, Routes.BUDGET)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0),
@@ -431,6 +428,9 @@ object NotificationHelper {
      * @param route 目标路由，需与 AppRoot 注册的 route 一致（截屏导入页）
      * @param forceIsland 用户在识屏设置里明确选了「通知（超级岛）」呈现结果时传 true：
      *   此时不再看「截屏记账状态上岛」开关，否则「选了通知模式却拿到普通通知」会让人莫名其妙
+     * @param islandActionTitle 岛/通知上的动作按钮文案（如「确认记账」），
+     *   与 [islandAction] 成对提供才生效；超级岛与普通通知回落路径都会带上按钮
+     * @param islandAction 动作按钮的 PendingIntent（广播：点按钮直接入账，不回应用）
      * @return 是否真的发出去了（无通知权限返回 false）
      */
     fun sendScreenshotNotice(
@@ -439,6 +439,14 @@ object NotificationHelper {
         body: String,
         route: String,
         forceIsland: Boolean = false,
+        islandActionTitle: String? = null,
+        islandAction: PendingIntent? = null,
+        /** 大岛展开卡主体的逐笔明细；null = 用 [body] */
+        islandDetail: String? = null,
+        /** 大岛头部 / 底栏的笔数摘要；null = 用标题前 8 字 */
+        islandSummary: String? = null,
+        /** 大岛左侧大图标（当前识别到的类别图标）；null = 应用图标 */
+        islandIcon: android.graphics.drawable.Icon? = null,
     ): Boolean {
         if (!canPostNotifications(context)) return false
 
@@ -459,6 +467,16 @@ object NotificationHelper {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     putExtra(EXTRA_NAV_ROUTE, route)
                 },
+                islandActionTitle = islandActionTitle,
+                islandAction = islandAction,
+                // 识屏结果用大岛样式（官方模板 16 展开卡）：识别到几笔、状态一眼可读
+                largeIsland = true,
+                islandDetail = islandDetail,
+                islandSummary = islandSummary,
+                islandIcon = islandIcon,
+                // 岛的存活时长对齐 Maling-Island 的 120s：结果卡不宜挂一小时，
+                // 过时只收岛，通知仍在通知栏里（点开进导入页的路不丢）
+                islandTimeoutSeconds = 120,
             ).sent
         }
 
@@ -473,16 +491,33 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0),
         )
-        val notification = NotificationCompat.Builder(context, SCREENSHOT_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, SCREENSHOT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
-            .build()
-        runCatching { NotificationManagerCompat.from(context).notify(SCREENSHOT_NOTIFICATION_ID, notification) }
+        // 普通通知同样带动作按钮：岛不可用时「直接确认」这条路不能断
+        if (islandAction != null && islandActionTitle != null) {
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    androidx.core.graphics.drawable.IconCompat.createWithResource(
+                        context,
+                        R.drawable.ic_notification,
+                    ),
+                    islandActionTitle,
+                    islandAction,
+                ).build(),
+            )
+        }
+        runCatching { NotificationManagerCompat.from(context).notify(SCREENSHOT_NOTIFICATION_ID, builder.build()) }
         return true
+    }
+
+    /** 撤下截屏结果通知/岛（岛按钮「确认记账」入账后由接收器调用） */
+    fun cancelScreenshotNotice(context: Context) {
+        runCatching { NotificationManagerCompat.from(context).cancel(SCREENSHOT_NOTIFICATION_ID) }
     }
 
     /**

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 长按桌面图标：直接进自动记账首页（磁贴/音量键之外最省事的入口） -->
+    <shortcut
+        android:shortcutId="auto_bookkeeping"
+        android:enabled="true"
+        android:icon="@drawable/ic_tile_scan"
+        android:shortcutShortLabel="@string/shortcut_auto_short"
+        android:shortcutLongLabel="@string/shortcut_auto_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.haloyu.iji"
+            android:targetClass="com.iji.app.MainActivity">
+            <extra android:name="nav_route" android:value="auto_bookkeeping" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="smart_capture"
+        android:enabled="true"
+        android:icon="@drawable/ic_tile_scan"
+        android:shortcutShortLabel="@string/shortcut_capture_short"
+        android:shortcutLongLabel="@string/shortcut_capture_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.haloyu.iji"
+            android:targetClass="com.iji.app.MainActivity">
+            <extra android:name="nav_route" android:value="smart_capture" />
+        </intent>
+    </shortcut>
+</shortcuts>

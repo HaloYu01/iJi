@@ -1,15 +1,19 @@
 package com.iji.app.ui
 
+import com.iji.app.ui.mine.StartupUpdateCheck
+import com.iji.app.ui.mine.UpdateDialog
+import com.iji.app.ui.mine.privacyPolicyVersion
+import com.iji.app.data.repository.SettingsRepository
+import com.iji.app.ui.components.exitApp
+
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -31,16 +35,24 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NamedNavArgument
@@ -54,7 +66,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.iji.app.ui.components.ijiTopBarSafeTopPadding
-import com.iji.app.ui.components.OnboardingDialog
 import com.iji.app.ui.nav.NavMotion
 import com.iji.app.ui.add.AddTransactionSheet
 import com.iji.app.ui.ai.AiBookkeepingScreen
@@ -73,8 +84,10 @@ import com.iji.app.ui.mine.LedgerManageScreen
 import com.iji.app.ui.mine.RecurringManageScreen
 import com.iji.app.ui.mine.ReimburseManageScreen
 import com.iji.app.ui.mine.AboutScreen
+import com.iji.app.ui.mine.DonationScreen
 import com.iji.app.ui.mine.CrashLogScreen
 import com.iji.app.ui.mine.ChangelogScreen
+import com.iji.app.ui.mine.GuideTutorialScreen
 import com.iji.app.ui.mine.LicenseScreen
 import com.iji.app.ui.mine.PrivacyPolicyScreen
 import com.iji.app.ui.mine.BackupSettingsScreen
@@ -83,10 +96,10 @@ import com.iji.app.ui.mine.CloudBackupScreen
 import com.iji.app.ui.mine.CategoryManageScreen
 import com.iji.app.ui.mine.CategoryEditScreen
 import com.iji.app.data.model.TransactionType
+import com.iji.app.ui.mine.TagBillsScreen
 import com.iji.app.ui.mine.TagManageScreen
 import com.iji.app.ui.mine.TemplateManageScreen
 import com.iji.app.ui.mine.TemplateEditScreen
-import com.iji.app.ui.budget.BudgetDetailScreen
 import com.iji.app.ui.budget.CategoryBudgetScreen
 import com.iji.app.ui.mine.BudgetScreen
 import com.iji.app.ui.mine.FontSizeScreen
@@ -101,15 +114,22 @@ import com.iji.app.ui.util.PredictiveBackSettings
 import kotlin.coroutines.cancellation.CancellationException
 import com.iji.app.ui.stats.CategoryBillsScreen
 import com.iji.app.ui.stats.StatsScreen
-import com.iji.app.ui.components.navbar.GlassBottomNavItem
-import com.iji.app.ui.components.navbar.GlassBottomNavBar
-import com.iji.app.ui.components.navbar.GlassAddButton
+import com.iji.app.ui.components.navbar.LiquidBottomTab
+import com.iji.app.ui.components.navbar.LiquidBottomTabs
+import com.iji.app.ui.components.navbar.LiquidBottomTrailing
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import com.iji.app.ui.util.isAppDarkTheme
+import com.kyant.backdrop.AppThemeSnapshotSync
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.time.LocalDate
+import kotlin.math.abs
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.snapshotFlow
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.BankCards
 import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Months
@@ -133,16 +153,16 @@ object Routes {
     const val PROMPTS = "prompts"          // 提示词与规则（AI 提示词 + 本地识别规则）
     const val PROMPT_EDIT = "prompt_edit/{kind}"          // 单条提示词编辑（kind = AiPromptKind.key）
     const val LOCAL_RULE_EDIT = "local_rule_edit/{ruleId}" // 本地识别规则编辑（ruleId = new 表示新增）
-    const val SCREEN_CAPTURE = "screen_capture"          // 识屏与授权（Shizuku / 无障碍 / 音量键）
     const val NOTIFICATION_RULES = "notification_rules"  // 通知识别规则（过滤关键词 + 支持来源）
-    const val BOOKKEEPING_PREFS = "bookkeeping_prefs"    // 记账偏好（落账账本 / 备注格式 / 去重窗口）
+    const val SMART_CAPTURE = "smart_capture"            // 智能识别（一句话 / 小票 / 语音，手动触发）
     const val PASSWORD_PROTECT = "password_protect"
     const val CATEGORY_MANAGE = "category_manage"
     const val CATEGORY_EDIT =
         "category_edit?categoryId={categoryId}&type={type}&parentId={parentId}&ledger={ledger}"
     const val TAG_MANAGE = "tag_manage"
+    /** 标签下钻：带该标签的全部账单（tag 需 Uri.encode 后拼接） */
+    const val TAG_BILLS = "tag_bills?tag={tag}"
     const val BUDGET = "budget"
-    const val BUDGET_DETAIL = "budget_detail/{budgetId}"  // 预算详情（通知点击落地页）
     const val CATEGORY_BUDGET = "category_budget"  // 分类预算管理
     const val TEMPLATE_MANAGE = "template_manage"  // 记账模板管理
     const val TEMPLATE_EDIT = "template_edit/{templateId}"  // 记账模板编辑（templateId = new 表示新建）
@@ -152,11 +172,17 @@ object Routes {
     const val PREFERENCES = "preferences"
     const val PERMISSION_CHECK = "permission_check"  // 权限检验（通知 / 后台 / 电池优化 / Shizuku / 无障碍）
     const val ABOUT = "about"
+    const val DONATION = "donation"           // 捐赠支出（赞赏码 + 手工公示）
     const val CRASH_LOG = "crash_log"
     const val CHANGELOG = "changelog"        // 更新日志
+    const val GUIDE_TUTORIAL = "guide_tutorial"  // 引导教程（App 使用说明文档）
+    const val ONBOARDING = "onboarding"                    // 首次启动的引导配置（同意隐私后）
+    const val ONBOARDING_RECONFIGURE = "onboarding_reconfigure"  // 引导教程页底部「重新配置引导」
     const val LICENSE = "license"            // 开源许可
     const val PRIVACY = "privacy"            // 隐私政策
     const val BILL_IMPORT = "bill_import"
+    const val BILL_IMPORT_PREVIEW = "bill_import_preview"  // 导入预览（CSV / 截图识别共用）
+    const val IMPORT_HISTORY = "import_history"          // 导入记录与恢复
     const val SCREENSHOT_IMPORT = "screenshot_import"  // 截屏批量导入
     const val LEDGER_MANAGE = "ledger_manage"
     const val BACKUP_SETTINGS = "backup_settings"  // 数据与备份（原「备份与恢复」，已并入数据管理）
@@ -170,8 +196,8 @@ object Routes {
 /**
  * 新建账户后回传给资产页的「待高亮账户 id」键（放在上一页的 savedStateHandle 里）。
  *
- * 不能用 MainViewModel 上的字段：它在 NavHost 里是每个目的地各一份实例，
- * 添加页写进去的状态资产页根本读不到。
+ * 不放在 MainViewModel 上：这是一次性导航结果，跟着返回栈走更清楚，
+ * 也不会在用户下次进入资产页时重复触发高亮。
  */
 private const val KEY_HIGHLIGHT_ACCOUNT = "highlightAccountId"
 
@@ -197,8 +223,11 @@ private val ImmersiveRoutes: Set<String> = TabRouteSet + setOf(
     Routes.FONT_SIZE,
     Routes.PASSWORD_PROTECT,
     Routes.TAG_MANAGE,
+    Routes.TAG_BILLS,
     Routes.BUDGET,
     Routes.BILL_IMPORT,
+    Routes.BILL_IMPORT_PREVIEW,
+    Routes.IMPORT_HISTORY,
     Routes.AUTO_BOOKKEEPING,
     Routes.CATEGORY_EDIT,
     Routes.STATS_CATEGORY,
@@ -214,7 +243,13 @@ private val ImmersiveRoutes: Set<String> = TabRouteSet + setOf(
     Routes.CATEGORY_MANAGE,
     Routes.SCREENSHOT_IMPORT,
     Routes.ABOUT,
+    Routes.DONATION,
     Routes.CHANGELOG,
+    Routes.GUIDE_TUTORIAL,
+    // 引导页顶栏是自定义短横条进度，安全区由页面自己吃（statusBarsPadding）；
+    // 登记进 ImmersiveRoutes 才不会被 ijiRoute 再垫一次顶部安全区。
+    Routes.ONBOARDING,
+    Routes.ONBOARDING_RECONFIGURE,
     Routes.LICENSE,
     Routes.PRIVACY,
     Routes.CRASH_LOG,
@@ -226,9 +261,8 @@ private val ImmersiveRoutes: Set<String> = TabRouteSet + setOf(
     Routes.PROMPTS,
     Routes.PROMPT_EDIT,
     Routes.LOCAL_RULE_EDIT,
-    Routes.SCREEN_CAPTURE,
     Routes.NOTIFICATION_RULES,
-    Routes.BOOKKEEPING_PREFS,
+    Routes.SMART_CAPTURE,
 )
 
 /**
@@ -276,6 +310,32 @@ fun IjiApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? androidx.activity.ComponentActivity
 
+    // 隐私政策门禁：首次使用 / 政策版本升级后必须先显式同意。
+    // 与锁屏同构地提前 return —— 未同意时 NavHost / Scaffold / 底栏都不存在，
+    // 返回键在 PrivacyConsentScreen 内被接成「不同意并退出」，绕不过去。
+    var privacyAgreed by remember {
+        mutableStateOf(
+            SettingsRepository.getInt(context, SettingsRepository.KEY_PRIVACY_AGREED_VERSION, 0)
+                >= privacyPolicyVersion
+        )
+    }
+    if (!privacyAgreed) {
+        PrivacyConsentScreen(
+            onAgree = { privacyAgreed = true },
+            onDecline = { context.exitApp() },
+        )
+        return
+    }
+
+    // 引导状态：FRESH = 存量用户 / 尚未同意隐私；PENDING = 刚同意隐私、引导待完成；
+    // DONE = 完成或跳过。读的是 SettingsRepository 内存缓存（Application 已 warmUp），组合期零磁盘 IO。
+    // 不用 remember 固定：同意隐私会触发重组，此时要读到刚写入的 PENDING。
+    val onboardingState = SettingsRepository.getInt(
+        context,
+        SettingsRepository.KEY_ONBOARDING_STATE,
+        SettingsRepository.ONBOARDING_FRESH,
+    )
+
     // 应用锁状态：只在**进程冷启动**时锁一次（从后台划掉 / 被系统杀掉后再进会走这里）。
     // 回前台不再重新验证——每次切出去看条通知回来都要输密码太折磨（用户要求）。
     var unlocked by remember { mutableStateOf(!AppLockManager.isEnabled(context)) }
@@ -320,42 +380,16 @@ fun IjiApp() {
     // 通知点击带来的目标路由（见 NavIntentHolder）：导航一次后立即清空，
     // 避免重组/旋转屏幕时重复跳转。Activity 冷启动与前台 onNewIntent 两条路径都会写入。
     val pendingRoute by NavIntentHolder.pendingRoute.collectAsStateWithLifecycle()
-    LaunchedEffect(pendingRoute) {
+    LaunchedEffect(pendingRoute, onboardingState) {
         val route = pendingRoute ?: return@LaunchedEffect
+        // 引导未完成时，通知冷启动不得把首屏顶成目标页；放行后状态变 DONE，这里再消费
+        if (onboardingState == SettingsRepository.ONBOARDING_PENDING) return@LaunchedEffect
         navController.navigate(route)
         NavIntentHolder.consume()
     }
 
     var showAddSheet by rememberSaveable { mutableStateOf(false) }
     var prefillBill by remember { mutableStateOf<com.iji.app.ai.AiBookkeepingService.BillResult?>(null) }
-
-    // 「我的 → 新手教程」等页面也能打开记账面板：它们拿不到这里的 showAddSheet，
-    // 用 AddSheetRequestHolder 中转（同 NavIntentHolder 的一次性信号）。
-    val addSheetRequested by AddSheetRequestHolder.requested.collectAsStateWithLifecycle()
-    LaunchedEffect(addSheetRequested) {
-        if (!addSheetRequested) return@LaunchedEffect
-        showAddSheet = true
-        AddSheetRequestHolder.consume()
-    }
-
-    // 首次引导：只在没看过时弹一次（标记写 DataStore）
-    var showOnboarding by remember {
-        mutableStateOf(
-            !com.iji.app.data.repository.SettingsRepository.getBoolean(
-                context,
-                com.iji.app.data.repository.SettingsRepository.KEY_ONBOARDING_DONE,
-                false,
-            )
-        )
-    }
-    fun finishOnboarding() {
-        showOnboarding = false
-        com.iji.app.data.repository.SettingsRepository.setBoolean(
-            context,
-            com.iji.app.data.repository.SettingsRepository.KEY_ONBOARDING_DONE,
-            true,
-        )
-    }
 
     // 自动记账：用户点了通知里的「记一笔」→ 打开记账面板并预填（金额/商家/账户已解析好）
     val pendingBill by PendingBillHolder.pending.collectAsStateWithLifecycle()
@@ -391,8 +425,110 @@ fun IjiApp() {
     // 全站转场（push 400ms / pop 250ms / tab 250ms；低内存设备自动降级）
     val motion = NavMotion.remember(tabOrder)
 
-    // 液态玻璃采样层：录制主内容，供底栏玻璃模糊透出
-    val backdrop = rememberLayerBackdrop()
+    // 液态玻璃采样层：录制主内容，供底栏/顶栏玻璃模糊透出。
+    // onDraw 先铺页面底色再录内容，让录出来的层**不透明**——
+    // 此前录的是「透明底 + 内容」，玻璃糊到的是透明底上的文字：文字滚进底栏/顶栏
+    // 玻璃后面会直接透出来（表现为玻璃后面的文字变透明、发虚），且各页进场旧帧
+    // 内容不同，模糊观感页页不一。铺底色后文字被糊进底色里，所有页面的玻璃
+    // 都糊的是同一套「底色 + 内容」材质。
+    val pageBackground = MaterialTheme.colorScheme.background
+    val backdrop = rememberLayerBackdrop(
+        onDraw = remember(pageBackground) {
+            {
+                drawRect(pageBackground)
+                drawContent()
+            }
+        },
+    )
+
+    // 玻璃高光（InteractiveHighlight）在 draw 期读全局主题快照，根部同步一次深浅色
+    AppThemeSnapshotSync()
+
+    // 采样层录制：tab 平推期间逐帧录制，让底栏玻璃同步糊到「正在移动的内容」；
+    // 平推窗口的最后一帧就是落定帧，**不再额外补录一次** —— 页面显示完再渲染一遍玻璃
+    // 会表现为玻璃突然刷新，正是要去掉的二次渲染。
+    //
+    // 平推只改 graphicsLayer 位移：两页内容各组合一次、动画帧只写矩阵，逐帧录制
+    // 比旧的「交叉淡入淡出 + 两页半透明叠加」便宜；滚动帧仍靠 epoch 重录，
+    // 静止页零录制。进出子页仍是视差 + alpha 两页叠加，保持落定后只补录一次。
+    val backdropScrollEpoch = remember { mutableIntStateOf(0) }
+    val backdropScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (abs(available.y) > abs(available.x)) backdropScrollEpoch.intValue++
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                backdropScrollEpoch.intValue++
+                return available
+            }
+        }
+    }
+    // 用普通数组而非 State：mustRecord 在 draw 阶段读，避免读快照状态触发重组。
+    val backdropRecordedEpoch = remember { intArrayOf(-1) }
+    val backdropSliding = remember { booleanArrayOf(false) }
+    // 平推帧 tick：窗口内每帧写入（withFrameNanos 循环），窗口收口时单发一次。
+    // mustRecordBackdrop 在 draw 作用域里读它 → draw 订阅该 state → 写入即重放 draw：
+    // 这是逐帧续链与「停帧补录」的唯一可靠通道（invalidateDraw() 在 draw 过程中调用
+    // 不产生下一帧重绘，2026-11-05 验证）。
+    val backdropFrameTick = remember { mutableLongStateOf(0L) }
+    // 录制闸门：内容变化帧隔帧录制 + 停帧后补录一帧落定画面。
+    // 玻璃模糊 ≥6dp，采样图半帧率刷新肉眼无感（tab 平推同款实测），而整屏重录
+    // （1280×2856 ≈ 14.6MB GPU 层/帧）是滚动期间最重的单项开销——滚动帧此前
+    // 每帧都录，是「滑动卡顿」的主因之一。隔帧后录制成本减半，静息结果不变。
+    val backdropRecordGate = remember { com.iji.app.ui.effects.glass.BackdropRecordGate() }
+    val firstRoute = remember { booleanArrayOf(true) }
+    LaunchedEffect(currentRoute) {
+        // 首帧不启动平推窗口：采样层由 LayerBackdropNode 创建时的 needsRecord 录好
+        if (firstRoute[0]) {
+            firstRoute[0] = false
+            return@LaunchedEffect
+        }
+        // 路由再变（含切到子页）时先收起窗口，避免 delay 被取消后标志残留 true
+        backdropSliding[0] = false
+        if (currentRoute in tabRoutes) {
+            // 与 slideSpring（约 350~400ms）同节奏并留余量：窗口内逐帧推 tick（驱动
+            // draw 重放，录制密度由 mustRecordBackdrop 隔帧控制），落定后窗口收口，
+            // 收口后写一帧 tick 补录落定画面，玻璃与页面内容最终一致。
+            backdropSliding[0] = true
+            var frames = 0
+            while (backdropSliding[0] && frames < 40) {
+                withFrameNanos { backdropFrameTick.longValue = it }
+                frames++
+            }
+            backdropSliding[0] = false
+            // 收口补录：窗口内最后一帧可能轮到「跳」，补一帧落定画面。
+            // 写 tick → mustRecordBackdrop draw 期订阅 → 重放 draw → 补录咨询。
+            backdropFrameTick.longValue = System.nanoTime()
+        } else {
+            // 子页视差转场：两页叠加绘制贵，只在落定后补录一次
+            delay(400L)
+            backdropScrollEpoch.intValue++
+        }
+    }
+    // 滚动停帧补录：滚动（含惯性）停止后 epoch 不再推进，被跳过的最后一帧需要
+    // 补一帧落定画面。这里在 epoch 安静 40ms 后写一帧 tick，强制重放 draw 触发补录；
+    // 滚动期间每帧都有新 emission，collectLatest 会取消挂起的补录。
+    LaunchedEffect(Unit) {
+        snapshotFlow { backdropScrollEpoch.intValue }
+            .collectLatest {
+                delay(40L)
+                backdropFrameTick.longValue = System.nanoTime()
+            }
+    }
+    // lambda 引用必须稳定（LayerBackdropElement.equals 按引用比较）
+    val mustRecordBackdrop: () -> Boolean = remember(backdropRecordGate) {
+        {
+            val epoch = backdropScrollEpoch.intValue
+            // draw 期订阅 tick：平推窗口逐帧推进、滚动停帧补录单发推进，都靠它续链
+            val tick = backdropFrameTick.longValue
+            val changed = epoch != backdropRecordedEpoch[0]
+            if (changed) backdropRecordedEpoch[0] = epoch
+            // 滚动推进 / 平推窗口内 = 内容在变 → 隔帧录制；停帧 → 补录一帧（见闸门）
+            backdropRecordGate.shouldRecord(changed || backdropSliding[0])
+        }
+    }
 
     // 统一轻量提示（Snackbar）宿主：替代各处 Toast
     val snackbarHostState = rememberSnackbarHostState()
@@ -400,8 +536,19 @@ fun IjiApp() {
 
     CompositionLocalProvider(
         LocalSnackbarController provides snackbarController,
+        // 全站液态玻璃采样层：弹层卡片（Scaffold popup 层）采样 NavHost 录制内容做真玻璃
+        LocalAppBackdrop provides backdrop,
         // 全 App 弹窗返回栈：NavHost 内外所有弹窗共用同一个栈，才能正确判定层级。
         LocalOverlayBackStack provides remember { OverlayBackStack() },
+        // 弹窗卡片材质档（NexioSchedule 移植件在 root host 渲染，读不到页面级 local，
+        // 必须提供在 Scaffold 之上）：折射开关目前写死开启，并不跟随任何材质档；
+        // 「降低动态效果」= 无材质档（玻璃整体关闭，退半透明底）、
+        // 预测性返回全局开关直连偏好设置。
+        // LocalGlassDialogBlurDp / LocalEdgeLightResolver / LocalScreenCornerRadius
+        // 均未注入，卡片走各自默认值。
+        com.iji.app.ui.components.dialog.LocalChromeLensEnabled provides true,
+        com.iji.app.ui.components.dialog.LocalMaterialNoneEnabled provides com.iji.app.ui.PerfState.reducedEffects,
+        com.iji.app.ui.components.dialog.LocalPredictiveBackEnabled provides com.iji.app.ui.util.PredictiveBackSettings.enabled,
     ) {
     top.yukonga.miuix.kmp.basic.Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -424,19 +571,25 @@ fun IjiApp() {
         ) {
             NavHost(
                 navController = navController,
-                startDestination = Routes.HOME,
+                // 同意隐私后落地的第一屏就是引导页（隐私门禁尚未 return 时 NavController 还不存在，
+                // 用 startDestination 等价于「同意后跳转」；同意后未完成就被杀进程也能兜住）
+                startDestination = if (onboardingState == SettingsRepository.ONBOARDING_PENDING) {
+                    Routes.ONBOARDING
+                } else {
+                    Routes.HOME
+                },
                 modifier = Modifier
                     .fillMaxSize()
-                    // 采样层节流：recordKey 传 null 时 layerBackdrop 每帧全屏录制，
-                    // 切 tab 时与页面重组 + 底栏 vibrancy/blur/lens shader 叠加，是切换卡顿的主因。
-                    // 传 currentRoute 后只在切页（路由变化）时重录，静止时不录、底栏也不重采不重跑 shader。
-                    .layerBackdrop(backdrop, recordKey = currentRoute),
+                    .nestedScroll(backdropScrollConnection)
+                    // recordKey 用常量：路由变化不额外触发强制录制；tab 平推期间由
+                    // mustRecord 逐帧录制，底栏玻璃同步跟随正在移动的内容。
+                    // 仍传非 null —— 传 null 会**永久**每帧全屏录制。
+                    .layerBackdrop(backdrop, recordKey = Unit, mustRecord = mustRecordBackdrop),
                 // 转场统一由 NavMotion 提供：
-                // - 主 tab：按底栏顺序 250ms 横向平移，方向跟索引；
-                // - push：新页从右推入、旧页同步向左推走，400ms；
-                // - pop：当前页向右推走、上一页从左侧同步回位，250ms；
-                // - 每次转场两页共用同一时长与缓动（lockstep，见 NavMotion 注释），
-                //   全程只用位移（不做 alpha 混合），低内存设备自动缩短/关掉 tab 动画。
+                // - 主 tab：按底栏顺序整页平推，两页同速锁步、无 alpha，方向跟索引；
+                // - push：新页从右推入 + 淡入，旧页左移 1/4 + 淡出（视差）；
+                // - pop：方向相反的视差回位；
+                // - 低内存设备自动关掉动画；系统「移除动画」由 MotionDurationScale 处理。
                 enterTransition = { motion.enter(this) },
                 exitTransition = { motion.exit(this) },
                 popEnterTransition = { motion.popEnter(this) },
@@ -445,14 +598,39 @@ fun IjiApp() {
                 ijiRoute(Routes.HOME) {
                     HomeScreen(
                         onNavigateMine = { navController.navigate(Routes.MINE) },
-                        onNavigateBudgetDetail = { navController.navigate("budget_detail/$it") },
                         onNavigateLedgerManage = { navController.navigate(Routes.LEDGER_MANAGE) },
                     )
                 }
+                // 首次启动引导：完成 / 跳过都把引导出栈后落主页（onCancel 在首启模式下不会被调用）
+                ijiRoute(Routes.ONBOARDING) {
+                    OnboardingWizardScreen(
+                        reconfigure = false,
+                        onFinish = {
+                            navController.navigate(Routes.HOME) {
+                                popUpTo(Routes.ONBOARDING) { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        },
+                        onCancel = {},
+                    )
+                }
+                // 重配：完成覆盖现有配置后回主页；取消不写任何东西、回引导教程页
+                ijiRoute(Routes.ONBOARDING_RECONFIGURE) {
+                    OnboardingWizardScreen(
+                        reconfigure = true,
+                        onFinish = {
+                            navController.navigate(Routes.HOME) {
+                                popUpTo(Routes.HOME) { inclusive = false }
+                                launchSingleTop = true
+                            }
+                        },
+                        onCancel = { navController.popBackStack() },
+                    )
+                }
                 ijiRoute(Routes.ASSETS) { entry ->
-                    // 新建账户后要定位高亮：MainViewModel 是**每个目的地各一份实例**，
-                    // 状态不能放在它上面（写的是另一份）。用 Navigation 的
-                    // savedStateHandle 把「新建的账户 id」回传给资产页最稳。
+                    // 新建账户后要定位高亮：即使 MainViewModel 现在全 App 共享，
+                    // 「一次性导航结果」仍放 Navigation 的 savedStateHandle——
+                    // 它跟着返回栈走，进程重建后还在，也不会污染全局状态。
                     val highlight by entry.savedStateHandle
                         .getStateFlow<Long?>(KEY_HIGHLIGHT_ACCOUNT, null)
                         .collectAsStateWithLifecycle()
@@ -538,7 +716,6 @@ fun IjiApp() {
                 ijiRoute(Routes.STATS) {
                     StatsScreen(
                         onNavigateMine = { navController.navigate(Routes.MINE) },
-                        onAddBill = { showAddSheet = true },
                         onNavigateCategory = { categoryId, start, end ->
                             navController.navigate(
                                 "stats_category?categoryId=${Uri.encode(categoryId)}" +
@@ -586,7 +763,6 @@ fun IjiApp() {
                 ijiRoute(Routes.BACKUP_SETTINGS) {
                     BackupSettingsScreen(
                         onBack = { navController.popBackStack() },
-                        onNavigateBillImport = { navController.navigate(Routes.BILL_IMPORT) },
                         onNavigateCloudBackup = { navController.navigate(Routes.CLOUD_BACKUP) },
                     )
                 }
@@ -643,7 +819,25 @@ fun IjiApp() {
                         onBack = { navController.popBackStack() },
                     )
                 }
-                ijiRoute(Routes.TAG_MANAGE) { TagManageScreen(onBack = { navController.popBackStack() }) }
+                ijiRoute(Routes.TAG_MANAGE) {
+                    TagManageScreen(
+                        onBack = { navController.popBackStack() },
+                        // 标签名可能含空格 / # / & 等字符，必须编码后放进 query 参数；
+                        // Navigation 解析参数时会自动解码，页面里直接用 getString 即可
+                        onOpenBills = { tag ->
+                            navController.navigate("tag_bills?tag=${Uri.encode(tag)}")
+                        },
+                    )
+                }
+                ijiRoute(
+                    Routes.TAG_BILLS,
+                    arguments = listOf(navArgument("tag") { type = NavType.StringType }),
+                ) { backStack ->
+                    TagBillsScreen(
+                        tag = backStack.arguments?.getString("tag").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
                 ijiRoute(Routes.LEDGER_MANAGE) {
                     LedgerManageScreen(onBack = { navController.popBackStack() })
                 }
@@ -679,32 +873,21 @@ fun IjiApp() {
                 ijiRoute(Routes.CATEGORY_BUDGET) {
                     CategoryBudgetScreen(onBack = { navController.popBackStack() })
                 }
-                ijiRoute(
-                    Routes.BUDGET_DETAIL,
-                    arguments = listOf(navArgument("budgetId") { type = NavType.LongType }),
-                ) { backStack ->
-                    BudgetDetailScreen(
-                        budgetId = backStack.arguments?.getLong("budgetId") ?: 0L,
-                        onBack = { navController.popBackStack() },
-                    )
-                }
                 ijiRoute(Routes.FONT_SIZE) { FontSizeScreen(onBack = { navController.popBackStack() }) }
                 ijiRoute(Routes.AUTO_BOOKKEEPING) {
                     AutoBookkeepingScreen(
                         onBack = { navController.popBackStack() },
-                        onNavigateScreenCapture = { navController.navigate(Routes.SCREEN_CAPTURE) },
-                        onNavigateNotificationRules = { navController.navigate(Routes.NOTIFICATION_RULES) },
-                        onNavigatePrefs = { navController.navigate(Routes.BOOKKEEPING_PREFS) },
+                        onNavigate = { route -> navController.navigate(route) },
                     )
                 }
-                ijiRoute(Routes.BOOKKEEPING_PREFS) {
-                    com.iji.app.ui.mine.BookkeepingPrefsScreen(
+                ijiRoute(Routes.SMART_CAPTURE) {
+                    com.iji.app.ui.mine.SmartCaptureScreen(
                         onBack = { navController.popBackStack() },
-                    )
-                }
-                ijiRoute(Routes.SCREEN_CAPTURE) {
-                    com.iji.app.ui.mine.ScreenCaptureSettingsScreen(
-                        onBack = { navController.popBackStack() },
+                        // 详细编辑：带预填弹「记一笔」面板，不退出本页
+                        onConfirmDetailEdit = { result ->
+                            prefillBill = result
+                            showAddSheet = true
+                        },
                     )
                 }
                 ijiRoute(Routes.NOTIFICATION_RULES) {
@@ -716,13 +899,11 @@ fun IjiApp() {
                     PreferencesScreen(
                         onBack = { navController.popBackStack() },
                         onFontSize = { navController.navigate(Routes.FONT_SIZE) },
-                        onPermissionCheck = { navController.navigate(Routes.PERMISSION_CHECK) },
                     )
                 }
                 ijiRoute(Routes.PERMISSION_CHECK) {
                     PermissionCheckScreen(
                         onBack = { navController.popBackStack() },
-                        onOpenScreenCapture = { navController.navigate(Routes.SCREEN_CAPTURE) },
                     )
                 }
                 ijiRoute(Routes.ABOUT) {
@@ -734,15 +915,29 @@ fun IjiApp() {
                         onNavigatePrivacy = { navController.navigate(Routes.PRIVACY) },
                     )
                 }
+                ijiRoute(Routes.DONATION) { DonationScreen(onBack = { navController.popBackStack() }) }
                 ijiRoute(Routes.CRASH_LOG) { CrashLogScreen(onBack = { navController.popBackStack() }) }
                 ijiRoute(Routes.CHANGELOG) { ChangelogScreen(onBack = { navController.popBackStack() }) }
+                ijiRoute(Routes.GUIDE_TUTORIAL) {
+                    GuideTutorialScreen(
+                        onBack = { navController.popBackStack() },
+                        onReconfigure = { navController.navigate(Routes.ONBOARDING_RECONFIGURE) },
+                    )
+                }
                 ijiRoute(Routes.LICENSE) { LicenseScreen(onBack = { navController.popBackStack() }) }
                 ijiRoute(Routes.PRIVACY) { PrivacyPolicyScreen(onBack = { navController.popBackStack() }) }
                 ijiRoute(Routes.BILL_IMPORT) {
                     BillImportScreen(
                         onBack = { navController.popBackStack() },
-                        onNavigateScreenshotImport = { navController.navigate(Routes.SCREENSHOT_IMPORT) },
+                        onNavigatePreview = { navController.navigate(Routes.BILL_IMPORT_PREVIEW) },
+                        onNavigateHistory = { navController.navigate(Routes.IMPORT_HISTORY) },
                     )
+                }
+                ijiRoute(Routes.BILL_IMPORT_PREVIEW) {
+                    com.iji.app.ui.mine.BillImportPreviewScreen(onBack = { navController.popBackStack() })
+                }
+                ijiRoute(Routes.IMPORT_HISTORY) {
+                    com.iji.app.ui.mine.ImportHistoryScreen(onBack = { navController.popBackStack() })
                 }
                 ijiRoute(Routes.SCREENSHOT_IMPORT) {
                     com.iji.app.ui.mine.ScreenshotImportScreen(onBack = { navController.popBackStack() })
@@ -773,61 +968,65 @@ fun IjiApp() {
                     com.iji.app.ui.ai.AiBookkeepingScreen(
                         onBack = { navController.popBackStack() },
                         onNavigatePrompts = { navController.navigate(Routes.PROMPTS) },
-                        onConfirm = { result ->
-                            prefillBill = result
-                            navController.popBackStack()
-                            showAddSheet = true
-                        },
                     )
                 }
             }
 
             // 液态玻璃底部导航（4 tab + 加号）：与 NavHost 同级、悬浮于内容之上，
-            // 不在 NavHost 的 AnimatedContentScope 内 —— 切 tab 的横向滑动带不走它，
+            // 不在 NavHost 的 AnimatedContentScope 内 —— 切 tab 的整页平推带不走它，
             // 也不会触发它自己的动画，因此 4 个 tab 之间位置恒定。
-            // 只有进出主 tab 区（如进入「我的」等子页）才单独滑动淡出，
-            // 时长与 NavMotion 的 push(400ms) / pop(250ms) 对齐，与页面转场同起同落。
+            // 只有进出主 tab 区（如进入「我的」等子页）才单独滑出 / 滑入：
+            // 纯位移、不做透明度混合，位移弹簧与 NavMotion 的 push/pop 同组，同起同落。
+            //
+            // 加号圆钮是底栏形状的一部分（LiquidBottomTrailing，胶囊 ∪ 圆 ∪ 融球颈同一条轮廓），
+            // 不再是贴在旁边的一颗独立按钮。
             AnimatedVisibility(
                 visible = showBottomBar,
                 modifier = Modifier.align(Alignment.BottomCenter),
-                enter = slideInVertically(tween(NavMotion.POP_MS)) { it } + fadeIn(tween(NavMotion.POP_MS)),
-                exit = slideOutVertically(tween(NavMotion.PUSH_MS)) { it } + fadeOut(tween(NavMotion.PUSH_MS)),
+                enter = slideInVertically(motion.slideSpring()) { it },
+                exit = slideOutVertically(motion.slideSpring()) { it },
             ) {
-                Row(
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .height(56.dp),
                 ) {
-                    GlassBottomNavBar(
+                    LiquidBottomTabs(
                         // 用 remember 固定 lambda 实例：否则每次重组都换新引用，
-                        // 底栏内部（drawBackdrop 的 effects 比对是引用相等）会重建整条模糊/RenderEffect 链
+                        // 内部 snapshotFlow 会反复重启、指示器被冲回起点
                         selectedTabIndex = remember(selectedTab) { { selectedTab } },
+                        // 组件在手势松手与外部路由同步两条路径都会回调 onTabSelected，
+                        // 这里做去重：重复点当前 tab 不再 navigate 一次
+                        //（navigate 带着 popUpTo(saveState)+restoreState 会把目标页拆掉重建，
+                        // 表现为「点 tab 顿一下」）。
                         onTabSelected = remember(navController) {
-                            { index: Int -> navigateToTab(navController, routeForTabIndex(index)) }
+                            var reportedIndex = Int.MIN_VALUE
+                            { index: Int ->
+                                if (index != reportedIndex) {
+                                    reportedIndex = index
+                                    navigateToTab(navController, routeForTabIndex(index))
+                                }
+                            }
                         },
                         backdrop = backdrop,
                         tabsCount = 4,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
                         containerHeight = 56.dp,
-                        highlightHeight = 48.dp,
-                        selectorHeight = 48.dp,
+                        trailing = LiquidBottomTrailing(
+                            icon = MiuixIcons.Demibold.Add,
+                            contentDescription = "记一笔",
+                            onClick = { showAddSheet = true },
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         // 四个 tab 统一用 Miuix 图标（Regular 变体，
                         // 即 MiuixIcons.xxx 不带 Light/Normal/Medium/Demibold 前缀）。
                         // 官方 miuix-icons 0.9.4 已内置这 4 个，直接引用即可，**不要**把源码复制进工程。
-                        GlassBottomNavItem(index = 0) { BottomTabContent("账本", MiuixIcons.ListView, selectedTab == 0) }
-                        GlassBottomNavItem(index = 1) { BottomTabContent("资产", MiuixIcons.BankCards, selectedTab == 1) }
-                        GlassBottomNavItem(index = 2) { BottomTabContent("日历", MiuixIcons.Months, selectedTab == 2) }
-                        GlassBottomNavItem(index = 3) { BottomTabContent("统计", MiuixIcons.Notes, selectedTab == 3) }
+                        LiquidBottomTab { BottomTabContent("账本", MiuixIcons.ListView, selectedTab == 0) }
+                        LiquidBottomTab { BottomTabContent("资产", MiuixIcons.BankCards, selectedTab == 1) }
+                        LiquidBottomTab { BottomTabContent("日历", MiuixIcons.Months, selectedTab == 2) }
+                        LiquidBottomTab { BottomTabContent("统计", MiuixIcons.Notes, selectedTab == 3) }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    GlassAddButton(
-                        onClick = { showAddSheet = true },
-                        backdrop = backdrop,
-                    )
                 }
             }
         }
@@ -861,6 +1060,12 @@ fun IjiApp() {
         // 现在由 OverlayBackStack 统一兜底；抽屉里再开选择器时，选择器更晚打开、位于栈顶，
         // 返回键先关选择器、再关抽屉。全部关闭后 enabled=false，返回键交还系统默认行为。
         OverlayBackHandler()
+
+        // 应用更新：A 启动即检查（静默，每天一次）+ A/B 共用的更新弹窗。
+        // 必须留在 Scaffold 内容 lambda 内，IjiDialog 的弹层宿主由它提供。
+        StartupUpdateCheck()
+        UpdateDialog()
+
         AddTransactionSheet(
             show = showAddSheet,
             onDismiss = { showAddSheet = false; prefillBill = null },
@@ -877,24 +1082,6 @@ fun IjiApp() {
             prefillTags = prefillBill?.tags,
         )
 
-        // 首次引导：解锁后弹一次（IjiDialog 必须在 Scaffold 子树内）
-        OnboardingDialog(
-            show = showOnboarding,
-            onDismiss = ::finishOnboarding,
-            onAddFirst = {
-                finishOnboarding()
-                showAddSheet = true
-            },
-            onImport = {
-                finishOnboarding()
-                navController.navigate(com.iji.app.ui.Routes.BILL_IMPORT)
-            },
-            onBackup = {
-                finishOnboarding()
-                navController.navigate(com.iji.app.ui.Routes.BACKUP_SETTINGS)
-            },
-            onFinish = ::finishOnboarding,
-        )
     }
     }
 }
@@ -902,7 +1089,7 @@ fun IjiApp() {
 /**
  * 底栏图标的视觉下移量。
  *
- * `GlassBottomNavItem` 内部 Column 是 `Arrangement.spacedBy(2.dp, CenterVertically)`，
+ * `LiquidBottomTab` 内部 Column 是 `Arrangement.spacedBy(2.dp, CenterVertically)`，
  * 即图标与文字本来就有 2dp 间距。这里用 `offset` 再让图标下移一点，使其**更贴近文字**；
  * `offset` 只做位移、不占布局空间，因此不会破坏 tab 内容的整体垂直居中。
  * 想更紧/更松直接调这个值（0.dp = 恢复原位）。
@@ -912,7 +1099,7 @@ private val BOTTOM_TAB_ICON_OFFSET_Y = 1.5.dp
 /**
  * 单个 tab 的内容：图标 + 文字，颜色跟随主题黑/白（与液态玻璃胶囊一致）。
  *
- * 选中为实色、未选中降到 45% 透明度以区分状态。[GlassBottomNavItem] 不向 content 暴露选中态，
+ * 选中为实色、未选中降到 45% 透明度以区分状态。[LiquidBottomTab] 不向 content 暴露选中态，
  * 由调用方按当前路由算出 selected 后传入。
  */
 @Composable
@@ -940,8 +1127,9 @@ private fun ColumnScope.BottomTabContent(
 }
 
 private fun navigateToTab(navController: NavHostController, route: String) {
-    // TODO(bisect-restore): 诊断临时版本——去掉 popUpTo/saveState/restoreState
     navController.navigate(route) {
+        popUpTo(Routes.HOME) { saveState = true }
         launchSingleTop = true
+        restoreState = true
     }
 }

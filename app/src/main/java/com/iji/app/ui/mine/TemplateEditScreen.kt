@@ -60,6 +60,7 @@ import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.theme.DividerGray
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
@@ -69,6 +70,7 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 记账模板编辑页（新建 / 修改同页；路由 `template_edit/{templateId}`，`new` = 新建）。
@@ -86,7 +88,7 @@ fun TemplateEditScreen(templateId: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val snackbar = LocalSnackbarController.current
     // 资产账户：组合付款拆分行的账户候选（与记一笔面板同一来源）
-    val app: MainViewModel = viewModel()
+    val app: MainViewModel = sharedMainViewModel()
     val accounts by app.accounts.collectAsStateWithLifecycle(initialValue = emptyList())
     val accountOptions = remember(accounts) {
         accounts.map { it.name }.filter { it.isNotBlank() }.distinct()
@@ -454,7 +456,7 @@ private fun CategoryIconCell(
         CategoryIconImage(
             name = category.name,
             color = accent,
-            size = 40.dp,
+            size = IjiIconSize.Grid,
             selected = selected,
             categoryId = category.id,
         )
@@ -501,7 +503,7 @@ private fun AccountField(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (account.isNotBlank()) {
-            AccountIconImage(iconKey = account, size = 16.dp)
+            AccountIconImage(iconKey = account, size = IjiIconSize.Inline)
             Spacer(Modifier.width(6.dp))
         }
         Text(
@@ -581,7 +583,7 @@ private fun PickerRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (iconKey != null) {
-            AccountIconImage(iconKey = iconKey, size = 20.dp)
+            AccountIconImage(iconKey = iconKey, size = IjiIconSize.Action)
             Spacer(Modifier.width(10.dp))
         }
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -639,7 +641,7 @@ private fun SplitsEditor(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (split.account.isNotBlank()) {
-                        AccountIconImage(iconKey = split.account, size = 16.dp)
+                        AccountIconImage(iconKey = split.account, size = IjiIconSize.Inline)
                         Spacer(Modifier.width(6.dp))
                     }
                     Text(

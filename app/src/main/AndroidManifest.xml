@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 应用锁指纹解锁：改用平台 android.hardware.biometrics.BiometricPrompt 后，
@@ -22,6 +23,9 @@
     <!-- 权限检验页：跳转「忽略电池优化」直接申请弹窗（ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
          的前置声明；未声明时 startActivity 直接抛 SecurityException） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 应用内更新：下载完新版本后拉起系统安装器。未声明时 ACTION_VIEW 安装 Intent
+         会被系统直接拒绝（连「安装未知应用」开关都不会出现） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <intent>
@@ -72,6 +76,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 系统分享小票/账单截图：直接送进「智能识别」，仍需用户在结果卡确认才入账 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <!-- 桌面图标长按快捷方式 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- 拍照识别小票：把 cache 目录下的临时图片授权给系统相机写入 -->
@@ -118,6 +132,11 @@
             android:name=".accessibility.PaymentActionReceiver"
             android:exported="false" />
 
+        <!-- 超级岛大岛「确认记账」按钮：点击直接把识屏识别结果入账（不回应用） -->
+        <receiver
+            android:name=".accessibility.BillConfirmReceiver"
+            android:exported="false" />
+
         <!--
             Shizuku 授权握手入口。Shizuku 客户端库靠这个 provider 与 Shizuku 服务端通信，
             exported=true 但加了系统级权限，其他应用无法调用。
@@ -130,10 +149,13 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- Shizuku UserService：由 Shizuku 以 shell 身份拉起，跑我们的 screencap -->
+        <!-- Shizuku UserService：由 Shizuku 以 shell 身份拉起，跑我们的 screencap。
+             它不是 AMS 实例化的 Service（类继承 IShizukuShell.Stub），lint 的
+             Instantiatable 检查属误报，release 的 lintVital 会因此中断构建。 -->
         <service
             android:name=".shizuku.ShizukuShellService"
-            android:exported="false" />
+            android:exported="false"
+            tools:ignore="Instantiatable" />
 
         <!-- 下拉快捷开关「识屏记账」：在任意应用的账单页下拉点击即可截屏识别 -->
         <service

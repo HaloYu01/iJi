@@ -46,6 +46,7 @@ import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
@@ -54,6 +55,7 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 分类预算管理页（设置 → 记账设置 → 预算功能 → 分类预算）。
@@ -68,7 +70,7 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 @Composable
 fun CategoryBudgetScreen(
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val scope = rememberCoroutineScope()
     val repo = remember { BudgetComponents.repository() }
@@ -256,7 +258,7 @@ private fun CategoryBudgetRow(
                 CategoryIconImage(
                     name = category.name,
                     color = Color(category.color),
-                    size = 36.dp,
+                    size = IjiIconSize.ListRow,
                     categoryId = category.id,
                 )
                 Spacer(Modifier.width(12.dp))

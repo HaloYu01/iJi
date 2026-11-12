@@ -18,3 +18,8 @@ fun Context.findActivity(): Activity? {
     }
     return null
 }
+
+/** 结束整个任务栈并退出；singleTask 下 finish() 不够彻底（隐私政策不同意 / 撤回同意共用）。 */
+fun Context.exitApp() {
+    findActivity()?.finishAffinity() ?: kotlin.system.exitProcess(0)
+}

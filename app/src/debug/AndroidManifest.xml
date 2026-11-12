@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    仅 debug 变体：允许明文 HTTP，供本机 localhost / 模拟器 10.0.2.2 的临时服务调试。
+    更新源已固定在 UpdateChecker.DEFAULT_FEED，界面不再提供切换入口；
+    release 包不合并这个文件，仍然禁止明文流量。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

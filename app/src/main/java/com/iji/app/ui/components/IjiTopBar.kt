@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -21,12 +19,12 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.iji.app.ui.PerfState
-import com.iji.app.ui.theme.minTouchTarget
+import com.iji.app.ui.components.topbar.LiquidTopBarButton
 import com.iji.app.ui.components.topbar.CollapsibleTopBar
 import com.iji.app.ui.components.topbar.BlurTopBar
 import com.iji.app.ui.components.topbar.TopBarScrollBehavior
 import com.kyant.backdrop.Backdrop
-import top.yukonga.miuix.kmp.basic.IconButton
+import com.iji.app.ui.mine.ProfileState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -73,6 +71,19 @@ fun ijiTopBarSafeTopPadding(): Dp {
  */
 @Composable
 fun ijiTopBarContentPadding(): Dp = ijiTopBarSafeTopPadding() + IjiTopBarHeight
+
+/**
+ * 页面采样层（`rememberLayerBackdrop` 挂滚动容器）的**条带录制高度**。
+ *
+ * 本页采样层的消费方只有顶栏玻璃件（[BlurTopBar] 模糊带 + 三颗 [LiquidTopBarButton] 圆钮），
+ * 全部落在「安全区 + 120dp 玻璃带 + 模糊采样余量」的顶部条带内。采样层录制时只录这段
+ * 条带（层原点 = 滚动容器原点 = 窗口顶），滚动帧的重录从整屏降到条带——GPU 层内存与
+ * 填充按高度比例下降（1280×2856 整屏 ≈ 14.6MB/帧 → 条带 ≈ 3MB/帧），这是顶栏玻璃
+ * 管线在滚动期间最大的单项 GPU 开销。条带以下在采样图中为透明，玻璃采样不到。
+ */
+@Composable
+fun ijiTopBarRecordHeight(): Dp =
+    ijiTopBarSafeTopPadding() + IjiTopBarBlurBandHeight + 16.dp
 
 /**
  * 四页共用的折叠顶栏：**背景毛玻璃（backdrop blur）** + 大标题滚动收起、小标题淡入、滚动阴影。
@@ -124,7 +135,12 @@ fun IjiTopBar(
                 endAction?.invoke(backdropAlpha, shadowAlpha)
                 if (onMineClick != null) {
                     // 「我的」按钮跟的是玻璃 / 背景进度（backdropAlpha），不是折叠阴影（shadowAlpha）
-                    TopBarMineButton(onClick = onMineClick, backdropAlpha = backdropAlpha)
+                    TopBarMineButton(
+                        onClick = onMineClick,
+                        backdrop = backdrop,
+                        backdropAlpha = backdropAlpha,
+                        shadowAlpha = shadowAlpha,
+                    )
                 }
             }
         }
@@ -185,15 +201,22 @@ fun IjiTopBar(
     }
 }
 
-/** 右上角「我的」入口。 */
+/** 右上角「我的」入口：毛玻璃顶栏（[backdrop] 非 null）时随模糊带淡入液态玻璃材质。
+ *  用户设置过头像时入口显示圆形头像（读 [ProfileState]，改头像即时重组），否则保持人形图标。 */
 @Composable
-fun TopBarMineButton(onClick: () -> Unit, backdropAlpha: Float = 1f) {
-    IconButton(onClick = onClick, modifier = Modifier.minTouchTarget().ijiIconFocusRing()) {
-        Icon(
-            MiuixIcons.Contacts,
-            contentDescription = "我的",
-            tint = MiuixTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp),
-        )
-    }
+fun TopBarMineButton(
+    onClick: () -> Unit,
+    backdrop: Backdrop? = null,
+    backdropAlpha: Float = 0f,
+    shadowAlpha: Float = 0f,
+) {
+    LiquidTopBarButton(
+        onClick = onClick,
+        icon = MiuixIcons.Contacts,
+        contentDescription = "我的",
+        backdrop = backdrop,
+        backdropAlpha = backdropAlpha,
+        shadowAlpha = shadowAlpha,
+        avatarUri = ProfileState.avatarUri.takeIf { it.isNotBlank() },
+    )
 }

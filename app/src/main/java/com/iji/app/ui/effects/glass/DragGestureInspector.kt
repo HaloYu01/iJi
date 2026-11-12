@@ -16,6 +16,16 @@ suspend fun PointerInputScope.inspectDragGestures(
     onDragStart: (down: PointerInputChange) -> Unit = {},
     onDragEnd: (change: PointerInputChange) -> Unit = {},
     onDragCancel: () -> Unit = {},
+    /**
+     * 父级消费掉 pointer change 后是否继续跟踪手指。
+     *
+     * 翻页手势（HorizontalPagerGesture / VerticalPager）在 Initial 阶段就 consume
+     * （ancestor 先于 descendant），Main 阶段拿到时 isConsumed 已为 true，横拉/竖拉
+     * 会被判为「手势被抢走」而中止，只有斜拉留得下来。纯视觉观察者
+     * （[InteractiveHighlight] 只读手指位置，自身从不 consume）传 true；会影响自身
+     * 手势语义的调用方（LiquidBottomTabs 的 DampedDragAnimation）保持 false。
+     */
+    observeConsumed: Boolean = false,
     onDrag: (change: PointerInputChange, dragAmount: Offset) -> Unit
 ) {
     awaitEachGesture {
@@ -29,6 +39,7 @@ suspend fun PointerInputScope.inspectDragGestures(
         val upEvent =
             drag(
                 pointerId = drag.id,
+                observeConsumed = observeConsumed,
                 onDrag = { onDrag(it, it.positionChange()) }
             )
         if (upEvent == null) {
@@ -41,6 +52,7 @@ suspend fun PointerInputScope.inspectDragGestures(
 
 private suspend inline fun AwaitPointerEventScope.drag(
     pointerId: PointerId,
+    observeConsumed: Boolean,
     onDrag: (PointerInputChange) -> Unit
 ): PointerInputChange? {
     val isPointerUp = currentEvent.changes.fastFirstOrNull { it.id == pointerId }?.pressed != true
@@ -50,7 +62,7 @@ private suspend inline fun AwaitPointerEventScope.drag(
     var pointer = pointerId
     while (true) {
         val change = awaitDragOrUp(pointer) ?: return null
-        if (change.isConsumed) {
+        if (!observeConsumed && change.isConsumed) {
             return null
         }
         if (change.changedToUpIgnoreConsumed()) {

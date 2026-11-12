@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BudgetAlertEntity::class,
         ImportHistoryEntity::class,
     ],
-    version = 23,
+    version = 24,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -365,6 +365,20 @@ val MIGRATION_22_23 = object : Migration(22, 23) {
 }
 
 /**
+ * 23 → 24：导入历史升级为可撤销 / 可重放的批次。
+ *
+ * 老记录没有账单 id 与快照，三列都给空值：历史仍能看，但「撤销 / 重新导入」对它不可用，
+ * 不能假装能恢复一批我们根本没记下 id 的账单。
+ */
+val MIGRATION_23_24 = object : Migration(23, 24) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE import_history ADD COLUMN recordIds TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE import_history ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE import_history ADD COLUMN undone INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/**
  * 21 → 22：收入侧「其他」的 categoryId 由 `other` 改为 `other-income`。
  *
  * 旧版支出与收入共用 `other`，索引按 id 去重时收入那条被丢弃，
@@ -392,7 +406,7 @@ object DbProvider {
                         AppDatabase::class.java,
                         "iji.db",
                     )
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
                         // 降级（如旧版 APK 覆盖新版）时破坏性重建，避免抛 IllegalStateException 直接崩溃；
                         // 正常升级仍依赖上面的显式迁移，不会触发。
                         // dropAllTables = true：连非 Room 管理的表也一并删干净（官方推荐值），

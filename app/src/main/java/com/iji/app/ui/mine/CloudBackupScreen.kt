@@ -63,11 +63,12 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 网盘备份（WebDAV）独立页。
  *
- * 从「数据与备份」页拆出来：连接配置 + 备份目标 + 备份内容 + 上传 + 恢复列表 + 自动备份，
+ * 从「数据与备份」页拆出来：连接配置 + 备份目标 + 备份内容 + 上传 + 恢复列表（含删除远端备份）+ 自动备份，
  * 六块内容放在一个面板里滚动体验太差（要滚到底才能看到"从网盘恢复"），所以单开一页。
  *
  * 现在「每日自动备份」只出现在这里，语义也统一了：它做的是
@@ -78,7 +79,7 @@ fun CloudBackupScreen(
     onBack: () -> Unit,
     /** 恢复完成后的回调（页面自己就地报结果，这里只用于外层刷新状态） */
     onRestored: () -> Unit = {},
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -98,6 +99,7 @@ fun CloudBackupScreen(
     var remoteFiles by remember { mutableStateOf<List<WebDavClient.RemoteFile>>(emptyList()) }
     var remoteBusy by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<WebDavClient.RemoteFile?>(null) }
+    var pendingDelete by remember { mutableStateOf<WebDavClient.RemoteFile?>(null) }
 
     var autoOn by remember { mutableStateOf(AutoBackupScheduler.isEnabled(context)) }
     var hour by remember { mutableIntStateOf(AutoBackupScheduler.hour(context)) }
@@ -323,6 +325,15 @@ fun CloudBackupScreen(
                     enabled = !busy,
                 ) { run({ "已上传：$it" }) { CloudBackupManager.uploadNow(context, content) } }
             }
+            item {
+                Text(
+                    "上传成功后会清理网盘上的旧备份：全量与仅配置各保留最近 " +
+                        "${CloudBackupManager.KEEP_COUNT} 份，更旧的自动删除。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
 
             // ── 结果反馈（就地显示，成功绿 / 失败红） ──
             message?.let { text ->
@@ -394,6 +405,14 @@ fun CloudBackupScreen(
                                 )
                             }
                             Text("恢复", color = MiuixPrimary, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.width(12.dp))
+                            IjiTextAction(
+                                text = "删除",
+                                compact = true,
+                                color = AppleRed,
+                                style = MaterialTheme.typography.bodySmall,
+                                onClick = { if (!busy) pendingDelete = file },
+                            )
                         }
                     }
                 }
@@ -560,6 +579,44 @@ fun CloudBackupScreen(
     ) {
         Text(
             "文件：${pendingRestore?.name.orEmpty()}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+
+    // 删除网盘备份：破坏性操作，先说清结果和影响
+    IjiDialog(
+        show = pendingDelete != null,
+        onDismissRequest = { pendingDelete = null },
+        title = "删除网盘备份",
+        summary = "会从网盘永久删除这一份，之后无法再用它恢复；本机数据和本机备份不受影响。",
+        confirmText = "删除",
+        confirmColor = AppleRed,
+        confirmEnabled = !busy,
+        onConfirm = {
+            val file = pendingDelete ?: return@IjiDialog
+            pendingDelete = null
+            busy = true
+            message = null
+            scope.launch {
+                CloudBackupManager.deleteRemote(context, file)
+                    .onSuccess {
+                        val remaining = remoteFiles.filter { it.url != file.url }
+                        remoteFiles = remaining
+                        // 删光了就撤掉「网盘已备份」记录，状态卡才不会谎报
+                        if (remaining.isEmpty()) CloudBackupManager.clearUploadRecord(context)
+                        messageOk = true
+                        message = "已删除网盘备份：${file.name}"
+                    }
+                    .onFailure {
+                        messageOk = false
+                        message = it.message ?: "删除失败"
+                    }
+                busy = false
+            }
+        },
+    ) {
+        Text(
+            "文件：${pendingDelete?.name.orEmpty()}",
             style = MaterialTheme.typography.bodyMedium,
         )
     }

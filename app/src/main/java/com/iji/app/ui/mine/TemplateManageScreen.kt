@@ -35,10 +35,11 @@ import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.data.repository.TemplateRepository
 import com.iji.app.data.repository.TransactionTemplate
 import com.iji.app.ui.components.CategoryIconImage
+import com.iji.app.ui.components.IjiPrimaryButtonBlue
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiTopBarContentPadding
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
-import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -112,7 +113,7 @@ fun TemplateManageScreen(
                 .fillMaxWidth()
                 .padding(horizontal = LocalDimens.current.screenPadding, vertical = 16.dp)
                 .clip(RoundedCornerShape(Radius.xl))
-                .background(MiuixPrimary)
+                .background(IjiPrimaryButtonBlue)
                 .clickable(onClick = onCreateTemplate)
                 .padding(vertical = 14.dp),
             horizontalArrangement = Arrangement.Center,
@@ -152,17 +153,21 @@ private fun TemplateRow(
             CategoryIconImage(
                 name = category.name,
                 color = Color(category.color),
-                size = 36.dp,
+                size = IjiIconSize.ListRow,
                 categoryId = category.id,
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(template.name, style = MaterialTheme.typography.bodyLarge)
-                // 副行只拼非空项：分类 · 金额（· 账户）；拆分模板的金额按合计展示
+                // 副行只拼非空项：分类 · 金额（· 账户）；拆分模板的金额按合计展示。
+                // 必须用 listOfNotNull：`listOf(a, b) + nullable` 会被推断成 List<String?>，
+                // joinToString 把空账户渲染成字面量 "null"。
                 Text(
-                    listOf(category.name, formatMoney(template.amountCents))
-                        .plus(template.account.takeIf { it.isNotBlank() })
-                        .joinToString(" · "),
+                    listOfNotNull(
+                        category.name,
+                        formatMoney(template.amountCents),
+                        template.account.takeIf { it.isNotBlank() },
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
@@ -171,7 +176,7 @@ private fun TemplateRow(
                 MiuixIcons.ChevronForward,
                 contentDescription = null,
                 tint = TextSecondary,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(IjiIconSize.Action),
             )
         }
     }

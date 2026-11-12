@@ -39,12 +39,14 @@ import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.theme.AppleOrange
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.IncomeGreen
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.TextSecondary
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 应收 / 垫付管理页。
@@ -59,7 +61,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 @Composable
 fun ReimburseManageScreen(
     onBack: () -> Unit,
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val transactions by app.transactions.collectAsStateWithLifecycle()
@@ -76,7 +78,6 @@ fun ReimburseManageScreen(
         .toList()
         .sortedByDescending { (_, list) -> list.filter { it.reimburseState.isOpen }.sumOf { it.amountCents } }
 
-    // P0：手搓顶栏 → 统一改用 MineSubPage（顶栏一套，内容从顶栏下方滚过）
     MineSubPage(title = "应收 / 垫付", onBack = onBack) {
         if (related.isEmpty()) {
             Box(
@@ -229,7 +230,7 @@ private fun ReimburseRow(
             CategoryIconImage(
                 name = category.name,
                 color = Color(category.color),
-                size = 32.dp,
+                size = IjiIconSize.ListRow,
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {

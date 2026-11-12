@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,7 +24,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.iji.app.ui.components.dialog.GlassDialog
+import com.iji.app.ui.components.dialog.OverlayDialog
+import com.iji.app.ui.effects.glass.LocalAppBackdrop
 import com.iji.app.ui.theme.Radius
 import com.kyant.capsule.ContinuousRoundedRectangle
 import kotlinx.coroutines.delay
@@ -32,8 +34,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 /**
  * 全局统一弹窗（应用内所有弹窗都走这里，样式与动效集中维护）。
  *
- * **外壳视觉/动效**：中央弹出、40dp 连续曲率大圆角、手机端上滑入场 / 大屏缩放入场、遮罩渐暗、
- * 预测性返回手势跟随（下拉/缩放回弹）、边缘光；背景为不透明主题底色（不做毛玻璃）。
+ * **外壳视觉/动效**：1:1 移植自 NexioSchedule 的弹窗卡片（OverlayDialog +
+ * DialogContentLayout，见 components/dialog/ 包）——贴底弹出（大屏居中）、
+ * 屏幕圆角贴合、真液态玻璃（vibrancy + 模糊 + chrome 折射 + 描边光）、
+ * 遮罩联动变淡、预测性返回跟手（可被全局开关与逐弹窗参数关闭）。
  *
  * **底部操作区**：不传 [onConfirm] 时只渲染 [content]（如纯列表选择弹窗）；
  * 传了 [onConfirm] 则自动在底部渲染「取消 / 确定」操作行，样式统一见 [IjiDialogActions]。
@@ -87,11 +91,14 @@ fun IjiDialog(
     // 弹窗里再套弹窗时按打开顺序逐层退出（详见 OverlayBackStack）。
     RegisterOverlayBackLayer(show = show, onDismiss = onDismissRequest, label = "IjiDialog:$title")
 
-    GlassDialog(
+    OverlayDialog(
         show = show,
         title = title,
         summary = summary,
         onDismissRequest = onDismissRequest,
+        // 全站液态玻璃采样层：由 AppRoot 在 Scaffold 之上 provide（弹层在 root host
+        // 渲染，读得到根级 CompositionLocal，与参考项目 App 传 backdrop 的架构等价）
+        liquidGlassBackdrop = LocalAppBackdrop.current,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             content()
@@ -157,7 +164,8 @@ fun IjiDialogActions(
 
 /**
  * 弹窗底部按钮：纯 Compose 实现，胶囊连续圆角（[Radius.lg]）。
- * [prominent] 为主题色高亮（半透明主题色底 + 主题色字），否则为透明底 + 次要文字色。
+ * [prominent] 为主题色高亮（半透明主题色底 + 主题色字），否则为浅灰底 + 次要文字色。
+ * 按压反馈只有按压缩放（[IjiButtonFx.SinkOnlyIndication]），不带水波纹——玻璃底上水波纹发脏。
  */
 @Composable
 fun IjiDialogActionButton(
@@ -169,11 +177,9 @@ fun IjiDialogActionButton(
     enabled: Boolean = true,
 ) {
     val accent = color ?: MiuixTheme.colorScheme.primary
-    val bgColor = if (prominent) accent.copy(alpha = 0.12f) else Color.Transparent
+    val bgColor = if (prominent) accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)
     val textColor = if (prominent) accent else MiuixTheme.colorScheme.onSurfaceVariantActions
     val shape = ContinuousRoundedRectangle(Radius.lg)
-    // 弹窗按钮原本是 clickable(indication = null)，完全没有任何按压反馈，
-    // 也不会继承 LocalIndication。这里显式接上统一反馈：水波纹 + 按压缩放 + 边缘光晕。
     val interactionSource = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
@@ -183,7 +189,7 @@ fun IjiDialogActionButton(
             .clickable(
                 enabled = enabled,
                 interactionSource = interactionSource,
-                indication = IjiButtonFx.PressIndication,
+                indication = IjiButtonFx.SinkOnlyIndication,
                 onClick = onClick,
             ),
         contentAlignment = Alignment.Center,

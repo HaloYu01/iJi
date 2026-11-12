@@ -46,6 +46,7 @@ import top.yukonga.miuix.kmp.icon.extended.Months
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import com.iji.app.ui.util.sharedMainViewModel
 
 /** 日期展示格式（与 app 内其它位置的中文日期保持一致） */
 private val CN_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年M月d日")
@@ -75,7 +76,7 @@ private val CN_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年M�
 fun DeleteBillsDialog(
     show: Boolean,
     onDismiss: () -> Unit,
-    viewModel: MainViewModel = viewModel(),
+    viewModel: MainViewModel = sharedMainViewModel(),
 ) {
     val snackbar = LocalSnackbarController.current
     val ledger by viewModel.currentLedger.collectAsStateWithLifecycle()

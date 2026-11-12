@@ -63,6 +63,7 @@ import com.iji.app.ui.components.currentCategoryIconName
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.components.listCategoryIconNames
 import com.iji.app.ui.theme.AppleRed
+import com.iji.app.ui.theme.IjiIconSize
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
@@ -384,7 +385,7 @@ private fun IconSection(
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CategoryIconImage(name = icon, color = accent, size = 52.dp)
+                CategoryIconImage(name = icon, color = accent, size = IjiIconSize.EditPreview)
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -501,7 +502,7 @@ private fun IconCell(
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CategoryIconImage(name = icon, color = accent, size = 40.dp)
+            CategoryIconImage(name = icon, color = accent, size = IjiIconSize.Grid)
             Spacer(Modifier.height(4.dp))
             Text(
                 icon,

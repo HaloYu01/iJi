@@ -71,6 +71,10 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun getById(id: Long): TransactionEntity?
 
+    /** 跨账本按 id 批量取（撤销导入批次用，不受当前账本过滤影响） */
+    @Query("SELECT * FROM transactions WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<TransactionEntity>
+
     // ── 应收 / 垫付 / 借款 ──
 
     /** 待收回（垫付、借出且未核销）的账单，按日期倒序 */

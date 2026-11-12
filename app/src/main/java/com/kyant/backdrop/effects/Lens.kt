@@ -17,7 +17,7 @@ fun BackdropEffectScope.lens(
     @FloatRange(from = 0.0) refractionHeight: Float,
     @FloatRange(from = 0.0) refractionAmount: Float,
     depthEffect: Boolean = false,
-    chromaticAberration: Boolean = false
+    chromaticAberration: Float = 0f
 ) {
     if (!isRuntimeShaderSupported()) return
     if (refractionHeight <= 0f || refractionAmount <= 0f) return
@@ -26,47 +26,43 @@ fun BackdropEffectScope.lens(
         padding = (padding - refractionHeight).fastCoerceAtLeast(0f)
     }
 
-    val cornerRadii = cornerRadii
-    val effect =
-        if (cornerRadii != null) {
-            val shader =
-                if (!chromaticAberration) {
-                    obtainRuntimeShader(
-                        "Refraction",
-                        RoundedRectRefractionShaderString
-                    )
-                } else {
-                    obtainRuntimeShader(
-                        "RefractionWithDispersion",
-                        RoundedRectRefractionWithDispersionShaderString
-                    )
-                }
-            // 折射 shader 在降采样缓冲上执行，所有像素空间 uniform 需同步 ×scale，
-            // 等比例缩放可保持 SDF 比例与折射位移在放大回原尺寸后与未降采样一致。
-            // scale 取当前缓冲的实际降采样比例（非固定常量），与 DrawBackdropNode 的 n 对齐。
-            val scale = this.downsampleScale
-            shader.apply {
-                setFloatUniform("size", size.width * scale, size.height * scale)
-                setFloatUniform("offset", -padding * scale, -padding * scale)
-                setFloatUniform(
-                    "cornerRadii",
-                    cornerRadii[0] * scale,
-                    cornerRadii[1] * scale,
-                    cornerRadii[2] * scale,
-                    cornerRadii[3] * scale
-                )
-                setFloatUniform("refractionHeight", refractionHeight * scale)
-                setFloatUniform("refractionAmount", -refractionAmount * scale)
-                setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
-                if (chromaticAberration) {
-                    setFloatUniform("chromaticAberration", 1f)
-                }
-            }
-            RuntimeShaderEffect(shader, "content")
+    // 不支持的 shape（自定义 Shape / 非圆角矩形）直接跳过折射，**不能抛**——这里跑在 draw/measure 链路里，
+    // 抛出去即整应用崩溃（底栏捕获层用自定义 BarShape，按下 tab 即 FATAL；NexioSchedule 同款补丁）。
+    val cornerRadii = cornerRadii ?: return
+    val shader =
+        if (chromaticAberration <= 0f) {
+            obtainRuntimeShader(
+                "Refraction",
+                RoundedRectRefractionShaderString
+            )
         } else {
-            throwUnsupportedSDFException()
+            obtainRuntimeShader(
+                "RefractionWithDispersion",
+                RoundedRectRefractionWithDispersionShaderString
+            )
         }
-    effect(effect)
+    // 折射 shader 在降采样缓冲上执行，所有像素空间 uniform 需同步 ×scale，
+    // 等比例缩放可保持 SDF 比例与折射位移在放大回原尺寸后与未降采样一致。
+    // scale 取当前缓冲的实际降采样比例（非固定常量），与 DrawBackdropNode 的 n 对齐。
+    val scale = this.downsampleScale
+    shader.apply {
+        setFloatUniform("size", size.width * scale, size.height * scale)
+        setFloatUniform("offset", -padding * scale, -padding * scale)
+        setFloatUniform(
+            "cornerRadii",
+            cornerRadii[0] * scale,
+            cornerRadii[1] * scale,
+            cornerRadii[2] * scale,
+            cornerRadii[3] * scale
+        )
+        setFloatUniform("refractionHeight", refractionHeight * scale)
+        setFloatUniform("refractionAmount", -refractionAmount * scale)
+        setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
+        if (chromaticAberration > 0f) {
+            setFloatUniform("chromaticAberration", chromaticAberration)
+        }
+    }
+    effect(RuntimeShaderEffect(shader, "content"))
 }
 
 private val BackdropEffectScope.cornerRadii: FloatArray?
@@ -122,9 +118,3 @@ private val BackdropEffectScope.cornerRadii: FloatArray?
 
         else -> null
     }
-
-private fun throwUnsupportedSDFException(): Nothing {
-    throw UnsupportedOperationException(
-        "Only RoundedRectangularShape or CornerBasedShape is supported in lens effects."
-    )
-}

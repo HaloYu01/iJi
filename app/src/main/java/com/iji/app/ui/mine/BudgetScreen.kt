@@ -1,4 +1,4 @@
-﻿package com.iji.app.ui.mine
+package com.iji.app.ui.mine
 import com.iji.app.ui.components.LocalSnackbarController
 
 import com.iji.app.ui.components.IjiDialog
@@ -14,6 +14,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -23,7 +26,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,11 +47,11 @@ import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import kotlin.math.roundToInt
+import com.iji.app.ui.util.sharedMainViewModel
 
 /**
  * 预算功能页（设置 → 记账设置 → 预算功能）。
@@ -60,7 +65,7 @@ fun BudgetScreen(
     onBack: () -> Unit,
     onNavigateCategoryBudget: () -> Unit = {},
     onNavigateAlertHistory: () -> Unit = {},
-    app: MainViewModel = viewModel(),
+    app: MainViewModel = sharedMainViewModel(),
 ) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
@@ -71,6 +76,16 @@ fun BudgetScreen(
     val bp = budgetProgress
     val budgetId = bp?.budget?.id ?: 0L
 
+    // 自定义结转金额（元，整数）。null = 尚未从已保存值初始化；只在预算 id 变化时回填一次，
+    // 否则写库回流会覆盖正在输入的文本（输「10」刚落库就被回填，后续输入会被打断）。
+    var carryOverAmountInput by remember { mutableStateOf<String?>(null) }
+    val savedCarryOverCents = bp?.budget?.rolloverCents ?: 0L
+    LaunchedEffect(bp?.budget?.id) {
+        if (carryOverAmountInput == null && bp != null) {
+            carryOverAmountInput = (savedCarryOverCents / 100L).takeIf { it > 0L }?.toString() ?: ""
+        }
+    }
+
     // 提醒记录条数（budget_alerts）：给「提醒记录」行做摘要
     val alertCount = remember { BudgetComponents.repository().alerts }
         .collectAsStateWithLifecycle(initialValue = emptyList()).value.size
@@ -80,6 +95,8 @@ fun BudgetScreen(
     var showReminderDialog by remember { mutableStateOf(false) }
     var reminderOn by remember { mutableStateOf(true) }
     var thresholdPercent by remember { mutableStateOf(80) }
+    // 输入框原始文本：允许留空 / 未输完，不与 Int 强绑，避免输「7」时立刻被当成 7%
+    var thresholdInput by remember { mutableStateOf("80") }
 
     // Android 13+ 通知权限：开启提醒时才请求
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -90,7 +107,6 @@ fun BudgetScreen(
         }
     }
 
-    // P0：手搓顶栏 + 不可滚动的 Column → 统一改用 MineSubPage（顶栏一套 + 内容可滚动）
     MineSubPage(title = "预算功能", onBack = onBack) {
         Column(
             modifier = Modifier
@@ -172,15 +188,15 @@ fun BudgetScreen(
                                 color = if (forecast.pace == PaceStatus.OVER_PACED) AppleRed else TextSecondary,
                             )
                         }
-                        // ── 结转：上期没用完的额度滚入本期 ──
+                        // ── 结转：可自动按上期结余，也可固定按自定义金额 ──
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("结转上期结余", style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    // 开了且真有结余时把金额说出来，否则用户不知道这个开关到底生效没有
+                                    // 开了且真有结转时把金额说出来，否则用户不知道这个开关到底生效没有
                                     if (bp.rolloverCents > 0L) {
-                                        "上期结余 ${formatMoney(bp.rolloverCents)} 已计入本期"
+                                        "已结转 ${formatMoney(bp.rolloverCents)} 到本期预算"
                                     } else {
                                         "未用完的额度滚入本期（超支不累计）"
                                     },
@@ -202,6 +218,48 @@ fun BudgetScreen(
                                     }
                                 },
                             )
+                        }
+                        // 自定义结转金额：留空 = 自动按上期结余；填整数元 = 每期固定结转该金额
+                        if (bp.budget.carryOver) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("结转金额", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "留空按上期结余自动结转，填数字则固定结转该金额",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                BasicTextField(
+                                    value = carryOverAmountInput ?: "",
+                                    onValueChange = { raw ->
+                                        val digits = raw.filter { it.isDigit() }.take(7)
+                                        carryOverAmountInput = digits
+                                        if (budgetId != 0L) {
+                                            scope.launch {
+                                                BudgetComponents.repository()
+                                                    .setCarryOverAmount(budgetId, (digits.toLongOrNull() ?: 0L) * 100L)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .width(72.dp)
+                                        .clip(RoundedCornerShape(Radius.sm))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                        color = MiuixPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center,
+                                    ),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("元", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            }
                         }
                     }
                 }
@@ -247,6 +305,7 @@ fun BudgetScreen(
                     }
                     reminderOn = bp?.budget?.reminderEnabled ?: true
                     thresholdPercent = bp?.budget?.alertThresholdPercent ?: 80
+                    thresholdInput = thresholdPercent.toString()
                     showReminderDialog = true
                 },
             )
@@ -313,41 +372,58 @@ fun BudgetScreen(
                 Text("启用提醒", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                 Switch(checked = reminderOn, onCheckedChange = { reminderOn = it })
             }
-            Spacer(Modifier.height(16.dp))
-            // 阈值行：左标题右当前值，拖动时百分比实时跟手
+            Spacer(Modifier.height(12.dp))
+            // 阈值区：标题 + 数字输入同一行，滑块、说明各留一点呼吸间距，避免上下贴死
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("提醒阈值", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                 Text(
-                    "${thresholdPercent}%",
+                    "提醒阈值",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                BasicTextField(
+                    value = thresholdInput,
+                    onValueChange = { raw ->
+                        val digits = raw.filter { it.isDigit() }.take(3)
+                        thresholdInput = digits
+                        digits.toIntOrNull()?.let { thresholdPercent = it.coerceIn(1, 100) }
+                    },
+                    modifier = Modifier
+                        .width(64.dp)
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = if (reminderOn) MiuixPrimary else TextSecondary,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                    ),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "%",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = if (reminderOn) MiuixPrimary else TextSecondary,
                 )
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Slider(
                 value = thresholdPercent.toFloat(),
-                onValueChange = { thresholdPercent = it.roundToInt() },
-                valueRange = 50f..100f,
-                // 50/60/70/80/90/100 六档
-                steps = 4,
+                onValueChange = {
+                    thresholdPercent = it.roundToInt().coerceIn(1, 100)
+                    thresholdInput = thresholdPercent.toString()
+                },
+                valueRange = 1f..100f,
                 enabled = reminderOn,
-                // 与字体大小页同一套 Miuix 滑块：档位键点 + 跨档触感反馈
-                showKeyPoints = true,
-                hapticEffect = SliderDefaults.SliderHapticEffect.Step,
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
-                "用量达到 ${thresholdPercent}% 时提醒「接近超支」",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "达到 100% 时始终提醒「已超支」，不受此阈值影响",
+                "用量达到 ${thresholdPercent}% 时提醒「接近超支」；达 100% 时始终提醒「已超支」",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )

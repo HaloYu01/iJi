@@ -19,8 +19,11 @@
 -keep class androidx.security.crypto.** { *; }
 -dontwarn androidx.security.crypto.**
 
-# 保留 Compose 相关
--keep class androidx.compose.** { *; }
+# Compose：不再整包 keep。
+# 原规则 `-keep class androidx.compose.** { *; }` 会让 R8 无法裁剪 material-icons-extended
+# （34 MB AAR、约 1.1 万个图标类），实测 release 多留 18.7 MiB dex 并派生等量 AOT。
+# Compose 运行时/UI 的 keep 由 androidx 各自 AAR 的 consumer-rules 提供，这里只需放行警告。
+# 图标是编译期静态常量，未引用的会被正常裁掉；改动后必须跑真机全页回归。
 -dontwarn androidx.compose.**
 
 # WorkManager：Worker 由框架反射实例化（Context + WorkerParameters 构造），

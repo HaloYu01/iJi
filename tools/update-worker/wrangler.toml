@@ -1,0 +1,14 @@
+name = "iji-update"
+main = "worker.js"
+compatibility_date = "2026-11-11"
+
+# 部署到 donghy661349 账户后的域名是 https://iji-update.donghy661349.workers.dev/，
+# 与 app/.../update/UpdateChecker.kt 的 DEFAULT_FEED 完全一致，客户端零改动。
+
+[vars]
+# 只放 APK 的公开仓库；Worker 匿名读它的 latest release（draft / pre-release 不算）
+GH_OWNER = "HaloYu01"
+GH_REPO = "iJi-release"
+
+# 从 latest release 的附件里挑安装包；多个 apk 时可用更精确的正则
+APK_ASSET_PATTERN = '\.apk$'

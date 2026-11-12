@@ -47,6 +47,8 @@ data class PeriodStats(
     val incomeCents: Long = 0L,
     /** 上一期支出（周→上周 / 月→上月 / 年→去年），仅用于环比，不做展示口径 */
     val prevExpenseCents: Long = 0L,
+    /** 上一期收入（口径同上）：AI 小结算收入环比用 */
+    val prevIncomeCents: Long = 0L,
     /** 分类构成：只保留净额 > 0 的分类（净退款分类不是"花在哪"，会让占比失真） */
     val byCategory: List<CategoryStat> = emptyList(),
     /** 同一份支出按**一级分类**归并；账单多用二级分类时，这里才看得出"餐饮一共花了多少" */
@@ -156,6 +158,7 @@ private fun buildPeriod(
     var expenseCents = 0L
     var incomeCents = 0L
     var prevExpenseCents = 0L
+    var prevIncomeCents = 0L
     var billCount = 0
     var expenseCount = 0
     val byCategory = HashMap<String, Long>()
@@ -182,6 +185,8 @@ private fun buildPeriod(
             TransactionType.INCOME -> if (inCurrent) {
                 incomeCents += tx.amountCents
                 billCount++
+            } else {
+                prevIncomeCents += tx.amountCents
             }
             TransactionType.TRANSFER -> Unit
         }
@@ -199,6 +204,7 @@ private fun buildPeriod(
         expenseCents = expenseCents,
         incomeCents = incomeCents,
         prevExpenseCents = prevExpenseCents,
+        prevIncomeCents = prevIncomeCents,
         byCategory = categories,
         byParentCategory = toStats(byParent),
         categoryExpenseCents = categories.sumOf { it.totalCents },

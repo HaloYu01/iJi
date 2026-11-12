@@ -1,6 +1,9 @@
 package com.iji.app.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -38,6 +42,7 @@ import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
 import com.kyant.capsule.ContinuousRoundedRectangle
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonColors
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.TextField
@@ -98,6 +103,8 @@ fun IjiFormDivider(startPadding: androidx.compose.ui.unit.Dp = 16.dp) {
  *
  * @param title 主标题（如「计入净资产」）
  * @param desc  副说明（可空）
+ * @param enabled false = 整行禁用：开关不可拨、文字变淡。用于前置条件不满足时
+ *   如实呈现「暂不生效」（如 AI 未配置时 AI 功能的子开关），而不是摆一个拨了也没用的开关
  */
 @Composable
 fun IjiSwitchRow(
@@ -106,6 +113,7 @@ fun IjiSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -115,20 +123,25 @@ fun IjiSwitchRow(
             Text(
                 title,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                },
             )
             if (!desc.isNullOrBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     desc,
                     style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
+                    color = TextSecondary.copy(alpha = if (enabled) 1f else 0.5f),
                 )
             }
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
             modifier = Modifier.padding(start = 8.dp),
         )
     }
@@ -192,6 +205,24 @@ fun <T> IjiCategoryChips(
     }
 }
 
+/** 主按钮统一底色（视觉稿 #5293FC，比原 Miuix 默认蓝浅一档） */
+val IjiPrimaryButtonBlue = Color(0xFF5293FC)
+
+/**
+ * 主按钮统一配色：浅蓝底 + 白字，禁用态同色降透明度。
+ *
+ * [IjiPrimaryButton] 与直接调 Miuix `Button` 的主操作共用，避免各页面各配一套。
+ */
+@Composable
+fun ijiPrimaryButtonColors(
+    containerColor: Color = IjiPrimaryButtonBlue,
+): ButtonColors = ButtonDefaults.buttonColorsPrimary().copy(
+    color = containerColor,
+    disabledColor = containerColor.copy(alpha = 0.4f),
+    contentColor = Color.White,
+    disabledContentColor = Color.White.copy(alpha = 0.7f),
+)
+
 /**
  * 主要操作按钮（页面底部的主按钮，如「创建账户」「保存修改」）。
  *
@@ -201,6 +232,7 @@ fun <T> IjiCategoryChips(
  * @param text    按钮文案
  * @param onClick 点击回调
  * @param enabled 是否可点（提交中置 false，防连点）
+ * @param containerColor 按钮底色（默认统一蓝，危险操作可传 error 红）
  */
 @Composable
 fun IjiPrimaryButton(
@@ -208,6 +240,7 @@ fun IjiPrimaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    containerColor: Color = IjiPrimaryButtonBlue,
 ) {
     Button(
         onClick = onClick,
@@ -215,29 +248,35 @@ fun IjiPrimaryButton(
         // Miuix 的 Button 默认用 secondaryVariant（浅灰）作底色，**禁用态与可用态的差别
         // 只有一点点灰度**，主操作按钮看起来永远像不可点。主按钮改用 primary 配色，
         // 禁用态落到 disabledPrimaryButton，一眼能看出「现在能不能点」。
-        colors = ButtonDefaults.buttonColorsPrimary(),
+        colors = ijiPrimaryButtonColors(containerColor),
         modifier = modifier.ijiButtonFocusRing(
             shape = ContinuousRoundedRectangle(ButtonDefaults.CornerRadius),
         ),
     ) {
-        Text(text, fontWeight = FontWeight.SemiBold)
+        // Miuix 的 Button 不会把 ButtonColors.contentColor 透给 Text，必须显式给白
+        Text(
+            text = text,
+            color = if (enabled) Color.White else Color.White.copy(alpha = 0.7f),
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
 /**
- * 表单输入框：**无彩色焦点边框**，靠淡底色 + 聚焦时底色加深表达焦点。
+ * 表单输入框：聚焦有明确交互提示（主色描边 + 底色加深），失焦为发丝线边界。
  *
- * 为什么不用 Miuix 自带的聚焦描边：
- * - 1.5dp 的蓝色描边在卡片里像"框里嵌了一个框"，与卡片/发丝线的视觉语言打架；
- * - 描边宽度是组件内部写死的（`if (isFocused) BorderWidth else 0.dp`），
- *   外部只能改颜色、改不了宽度，留着半透明描边反而更脏。
+ * 为什么自画底色与描边：Miuix 的 TextField 内部背景在这套主题下画不出来（实测纯白），
+ * 聚焦描边宽度写死在组件内只能从颜色上抹掉——所以输入区的视觉锚点全部由外层控制。
  *
- * 具体做法：`borderColor` 设为透明（聚焦时那 1.5dp 直接不可见），
- * 用 `onFocusChanged` 记录焦点，把底色从 8% 提到 13% —— 没有描边之后，
- * 浅底色就是唯一的输入区锚点，太淡（5% 以下）会让整块表单变成"一堆浮着的文字"。
+ * 此前唯一的反馈是底色 7%→12% 的透明度变化，在白色卡片上几乎不可感知——用户点输入栏
+ * 看不到任何变化，不知道点没点上。现在：
+ * - **聚焦**：主色 45% 的 1dp 描边亮起 + 底色加深（12%），「正在编辑这个字段」一目了然；
+ * - **失焦**：保留 onSurface 6% 的发丝线边界，输入区在卡里可被发现（原来无边框时
+ *   只有一层若隐若现的灰底，字段边界靠猜）；
+ * - 两态都走 [animateColorAsState] 150ms 过渡，反馈是「亮起」而非「跳变」。
  *
- * 字段名不放这里 —— 用 [IjiFormSectionTitle] 之外的 `FieldLabel` 放在框外，
- * 这里只放**占位符**（`useLabelAsPlaceholder`），避免浮动小字贴住输入值。
+ * 字段名不放这里 —— 用 `FieldLabel` 放在框外，这里只放**占位符**
+ * （`useLabelAsPlaceholder`），避免浮动小字贴住输入值。
  *
  * @param placeholder 占位文字（输入后自动让位）
  */
@@ -251,16 +290,29 @@ fun IjiFormTextField(
     keyboardActions: KeyboardActions = KeyboardActions.Default,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
     // 底色由外层自己画：Miuix 的 TextField 内部背景在这套主题下画不出来（实测纯白），
     // 而"输入区"是去掉描边后唯一的视觉锚点，必须可控。
-    val background = MaterialTheme.colorScheme.onSurface.copy(
-        alpha = if (focused) 0.12f else 0.07f,
+    val background by animateColorAsState(
+        targetValue = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.12f else 0.07f),
+        animationSpec = tween(150),
+        label = "fieldBackground",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (focused) {
+            MiuixPrimary.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+        },
+        animationSpec = tween(150),
+        label = "fieldBorder",
     )
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(background),
+            .clip(shape)
+            .background(background)
+            .border(1.dp, borderColor, shape),
     ) {
         TextField(
             value = value,
@@ -274,6 +326,9 @@ fun IjiFormTextField(
                 // 透明 = 聚焦时那圈 1.5dp 描边不可见（宽度写死在组件内，只能从颜色上抹掉）
                 borderColor = Color.Transparent,
             ),
+            // Miuix 的光标颜色默认跟随 colors.borderColor——上面把边框设成了透明，
+            // 不显式给光标颜色的话，聚焦后光标也是透明的（「没有光标定位」的根源）
+            cursorBrush = SolidColor(MiuixPrimary),
             // 左右 14dp：文字与色块边缘留白；上下 12dp：输入值上下留白均匀
             insideMargin = DpSize(14.dp, 12.dp),
             label = placeholder,

@@ -25,6 +25,7 @@ import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.components.StateSize
 import com.iji.app.ui.components.StateView
 import com.iji.app.ui.theme.TextSecondary
+import java.time.temporal.ChronoUnit
 
 /**
  * 统计页「AI 小结」弹窗：按**当期汇总**生成一段点评。
@@ -42,6 +43,9 @@ internal fun AiSummaryDialog(
     dimensionLabel: String,
     periodTitle: String,
     period: PeriodStats,
+    /** 预算参照（有效额度 / 已用，分）：仅「月维度 + 浏览当月 + 存在预算」时由调用方给出 */
+    budgetCents: Long? = null,
+    budgetSpentCents: Long? = null,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -66,7 +70,15 @@ internal fun AiSummaryDialog(
                 expenseCents = period.expenseCents,
                 incomeCents = period.incomeCents,
                 billCount = period.billCount,
+                // 支出笔数与区间天数：笔均 / 日均的分母，payload 里预计算
+                expenseCount = period.expenseCount,
+                daysInPeriod = period.range
+                    ?.let { ChronoUnit.DAYS.between(it.start, it.end).toInt() + 1 }
+                    ?: 0,
                 prevExpenseCents = period.prevExpenseCents,
+                prevIncomeCents = period.prevIncomeCents,
+                budgetCents = budgetCents,
+                budgetSpentCents = budgetSpentCents,
                 // 一级分类归并后的前三名（二级分类太多，模型看不过来也没必要发那么多）
                 topCategories = period.byParentCategory
                     .take(3)
@@ -75,10 +87,14 @@ internal fun AiSummaryDialog(
         )
         loading = false
         if (result == null) {
-            error = if (!AiConfig.aiReady(context)) {
-                "还没有可用的 API Key。先到「AI 记账 → 配置」填上再回来。"
-            } else {
-                "生成失败：检查网络或模型配置后重试。"
+            // 三种失败三种话：总开关关了 ≠ 没 Key ≠ 网络失败，文案必须如实区分
+            error = when {
+                !AiConfig.isEnabled(context) ->
+                    "「AI 识别」总开关已关闭，到「AI 记账」页打开后再回来生成。"
+                AiConfig.getApiKey(context).isBlank() ->
+                    "还没有可用的 API Key。先到「AI 记账 → 配置」填上再回来。"
+                else ->
+                    "生成失败：检查网络或模型配置后重试。"
             }
         } else {
             text = result
@@ -89,7 +105,7 @@ internal fun AiSummaryDialog(
         show = show,
         onDismissRequest = onDismiss,
         title = "AI 小结 · $periodTitle",
-        summary = "只发送本期的汇总数据（收支合计、笔数、分类前三），不发送单笔流水。",
+        summary = "只发送本期汇总与预计算指标，不发送单笔流水。",
         dismissText = "关闭",
         confirmText = if (text == null) "重试" else "重新生成",
         confirmEnabled = !loading && !empty,

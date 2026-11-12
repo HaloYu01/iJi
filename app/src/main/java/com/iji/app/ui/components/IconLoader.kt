@@ -317,3 +317,57 @@ fun AccountIconImage(
         error = { AccountIcon(iconKey = iconKey, size = size, modifier = modifier) },
     )
 }
+
+/**
+ * 分类图标的**通知用合成位图**：分类色圆底 + 白色线条 PNG（56%，与
+ * [CategoryIconImage] 同比例）居中；无素材时回落「分类色圆底 + 分类名首字」
+ * （与 [IconInitial] 同思路）。输出 96×96 方图，长宽比不齐的素材按短边居中适配。
+ *
+ * 供超级岛等**脱离 Compose 的系统 UI** 场景使用（岛左侧大图标 = 当前识别到的类别），
+ * 服务 / 广播环境无 Compose 组合树，只能走 BitmapFactory + Canvas 自绘。
+ *
+ * @param name 分类名（首字徽标的文字、图标解析的名字 key）
+ * @param categoryId 分类 id（用户自定义图标按 id 优先解析，改名不丢图标）
+ * @param categoryColor 分类色（ARGB Int，圆底与首字徽标底色）
+ */
+fun categoryNotificationBitmap(
+    context: Context,
+    name: String,
+    categoryId: String?,
+    categoryColor: Int,
+): android.graphics.Bitmap {
+    val size = 96
+    val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+    // 分类色圆底（岛上明暗底色都由这层彩色保证可读）
+    paint.color = categoryColor
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
+
+    val path = resolveCategoryPath(context, name, categoryId)
+    val src = path?.let { p ->
+        runCatching { context.assets.open(p).use { BitmapFactory.decodeStream(it) } }.getOrNull()
+    }
+    if (src != null) {
+        // 白线 PNG 适配进圆内 56% 区域，居中（素材等比，不拉伸）
+        val inner = size * 0.56f
+        val scale = inner / maxOf(src.width, src.height)
+        val w = src.width * scale
+        val h = src.height * scale
+        val dst = android.graphics.RectF(
+            (size - w) / 2f, (size - h) / 2f, (size + w) / 2f, (size + h) / 2f,
+        )
+        paint.isFilterBitmap = true
+        canvas.drawBitmap(src, null, dst, paint)
+    } else {
+        // 首字徽标：白字、半粗、垂直几何居中
+        paint.color = android.graphics.Color.WHITE
+        paint.textAlign = android.graphics.Paint.Align.CENTER
+        paint.textSize = size * 0.4f
+        paint.isFakeBoldText = true
+        val label = name.trim().take(1).ifEmpty { "?" }
+        canvas.drawText(label, size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
+    }
+    return bitmap
+}
