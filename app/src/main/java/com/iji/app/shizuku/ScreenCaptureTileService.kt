@@ -60,7 +60,8 @@ class ScreenCaptureTileService : TileService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(pending)
         } else {
-            @Suppress("DEPRECATION")
+            // PendingIntent 重载是 API 34+，34 以下只能用 Intent 重载
+            @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
             startActivityAndCollapse(intent)
         }
     }

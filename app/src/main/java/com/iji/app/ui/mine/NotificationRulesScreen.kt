@@ -179,7 +179,6 @@ fun NotificationRulesScreen(onBack: () -> Unit) {
                         whitelist = PaymentNotificationFilter.DEFAULT_WHITELIST
                         blacklist = ""
                         persist(whitelist, blacklist)
-                        snackbar.show("已恢复默认词表")
                     },
                 )
             }

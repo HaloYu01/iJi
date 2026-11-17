@@ -133,7 +133,6 @@ internal fun AiServiceSection(
         keyVisible = false
         testResult = null
         dirty = false
-        snackbar.show("配置已保存")
     }
 
     fun startTest() {

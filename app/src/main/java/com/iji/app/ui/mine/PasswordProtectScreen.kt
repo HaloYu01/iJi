@@ -7,7 +7,6 @@ import com.iji.app.ui.components.IjiDialog
 import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.Radius
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -145,7 +144,6 @@ fun PasswordProtectScreen(
                             if (enabled && fingerprintAvailable) {
                                 fingerprintEnabled = it
                                 AppLockManager.setFingerprintEnabled(context, it)
-                                snackbar.show(if (it) "指纹解锁已开启" else "指纹解锁已关闭")
                             }
                         },
                         enabled = enabled && fingerprintAvailable,
@@ -194,10 +192,8 @@ fun PasswordProtectScreen(
         fieldLabel = "设置密码（4位数字）",
         onDismiss = { showPinDialog = false },
         onConfirm = { pinCode ->
-            // setPin 会校验位数：写成功了才提示，别再出现"其实没设上却说已设置"
             if (AppLockManager.setPin(context, pinCode)) {
                 enabled = true
-                snackbar.show("PIN已设置")
                 showPinDialog = false
             } else {
                 snackbar.show("PIN 需为 ${AppLockManager.PIN_LENGTH} 位数字")
@@ -227,7 +223,6 @@ fun PasswordProtectScreen(
         onConfirm = { pinCode ->
             if (AppLockManager.setPin(context, pinCode)) {
                 enabled = true
-                snackbar.show("PIN已修改")
                 showChangePin = false
             } else {
                 snackbar.show("PIN 需为 ${AppLockManager.PIN_LENGTH} 位数字")
@@ -245,7 +240,6 @@ fun PasswordProtectScreen(
         onVerified = {
             AppLockManager.disable(context)
             enabled = false
-            snackbar.show("密码保护已关闭")
             showCloseVerify = false
         },
     )
@@ -286,13 +280,8 @@ private fun PinSetupDialog(
 }
 
 /**
- * 身份验证弹窗：输入当前 PIN，或点「使用指纹验证」走系统指纹认证。
- *
- * 修改 / 关闭密码共用。此前验证只支持 PIN，开着指纹解锁的用户
- * 改个密码也得翻出 4 位数字；现在两个动作都多一条指纹出路。
- *
- * 弹窗自己负责触发指纹并**就地显示错误**：snackbar 渲染在 Scaffold 层，
- * 会被上层弹窗盖住（只露出底下一条边），弹窗期间的提示必须画在弹窗内部。
+ * 修改 / 关闭密码共用的身份验证弹窗：PIN 或指纹。
+ * 错误就地显示：snackbar 渲染在 Scaffold 层，会被上层弹窗盖住。
  */
 @Composable
 private fun PinVerifyDialog(

@@ -323,7 +323,6 @@ fun BudgetScreen(
             if (yuan != null && yuan > 0) {
                 // 写入持久化的 Budget（全分类 + 自然月），首页卡片与提醒随即生效
                 app.setMonthlyBudget((yuan * 100).toLong())
-                snackbar.show("预算已更新")
                 showEditDialog = false
             } else {
                 snackbar.show("请输入有效金额")
@@ -355,8 +354,6 @@ fun BudgetScreen(
             scope.launch {
                 runCatching {
                     BudgetComponents.repository().setReminder(budgetId, reminderOn, thresholdPercent)
-                }.onSuccess {
-                    snackbar.show("提醒设置已保存")
                 }.onFailure {
                     snackbar.show("保存失败，请重试")
                 }

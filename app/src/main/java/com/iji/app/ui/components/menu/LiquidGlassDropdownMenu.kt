@@ -227,9 +227,6 @@ fun LiquidGlassDropdownMenu(
                     spring(dampingRatio = 0.85f, stiffness = 650f, visibilityThreshold = 0.0001f)
                 )
             }
-            // 退出位移回弹：独立一条欠阻尼 spring，与尺寸 spring 解耦。
-            // 阻尼/刚度按「700ms 宿主保留期内收完」调（0.52/220 要 ~1s，收尾会被
-            // 卸载抽掉 → 收起钮跳变），0.6/600 约 400ms 落定，脉冲幅度不变。
             launch {
                 settleBounce.snapTo(1f)
                 settleBounce.animateTo(
@@ -237,11 +234,10 @@ fun LiquidGlassDropdownMenu(
                     spring(dampingRatio = 0.6f, stiffness = 600f, visibilityThreshold = 0.0001f)
                 )
             }
-            // 这里必须"等"动画跑完（不能立刻 snapTo，否则会把上面的动画取消掉）；
-            // 用锚点 tween 兜住，结束后再收尾
-            originProgress.animateTo(0f, tween(340, easing = exitEasing))
+            originProgress.animateTo(0f, tween(DropdownExitMs, easing = exitEasing))
             fraction.snapTo(0f)
             originProgress.snapTo(0f)
+            settleBounce.snapTo(0f)
         }
     }
 

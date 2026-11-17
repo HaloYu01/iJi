@@ -156,18 +156,9 @@ fun RecurringManageScreen(
                         rule = rule,
                         today = today,
                         onClick = { editing = rule },
-                        onToggle = { on ->
-                            app.toggleRecurringRule(rule, on)
-                            snackbar.show(if (on) "已启用「${rule.title()}」" else "已停用「${rule.title()}」")
-                        },
-                        onRunNow = {
-                            app.runRecurringRuleNow(rule)
-                            snackbar.show("已生成一笔 ${formatMoney(rule.amountCents)}")
-                        },
-                        onDelete = {
-                            app.deleteRecurringRule(rule)
-                            snackbar.show("已删除「${rule.title()}」")
-                        },
+                        onToggle = { on -> app.toggleRecurringRule(rule, on) },
+                        onRunNow = { app.runRecurringRuleNow(rule) },
+                        onDelete = { app.deleteRecurringRule(rule) },
                     )
                 }
                 item { Spacer(Modifier.height(16.dp)) }
@@ -227,10 +218,8 @@ fun RecurringManageScreen(
                     startDate = r.nextRunDate,
                     ledgerId = r.ledgerId,
                 )
-                snackbar.show("已创建，${FREQ_LABEL[r.freq]}自动生成")
             } else {
                 app.updateRecurringRule(r)
-                snackbar.show("已保存")
             }
             editing = null
         },

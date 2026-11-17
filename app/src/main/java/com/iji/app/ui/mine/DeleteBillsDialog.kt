@@ -256,15 +256,17 @@ fun DeleteBillsDialog(
                 busy = false
                 confirming = false
                 onDismiss()
-                snackbar.show(outcome.userMessage(), duration = SnackbarDuration.Long)
+                if (outcome !is DeleteBillsOutcome.Success) {
+                    snackbar.show(outcome.userMessage(), duration = SnackbarDuration.Long)
+                }
             }
         },
     )
 }
 
-/** 执行结果 → 给用户看的一句话（成功要说明"余额已同步"，失败要给出可读原因） */
+/** 执行结果 → 给用户看的一句话 */
 private fun DeleteBillsOutcome.userMessage(): String = when (this) {
-    is DeleteBillsOutcome.Success -> "已删除 $count 笔账单，账户余额与统计已同步"
+    is DeleteBillsOutcome.Success -> ""
     DeleteBillsOutcome.NoMatch -> "没有找到可删除的账单（可能已被删除）"
     is DeleteBillsOutcome.Failure -> message
 }

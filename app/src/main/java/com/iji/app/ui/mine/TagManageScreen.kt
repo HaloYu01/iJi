@@ -192,9 +192,7 @@ fun TagManageScreen(
                         snackbar.show("请输入标签名称")
                     } else {
                         scope.launch {
-                            snackbar.show(
-                                if (TagStore.add(context, name)) "已添加：$name" else "标签已存在",
-                            )
+                            if (!TagStore.add(context, name)) snackbar.show("标签已存在")
                         }
                         dialog = null
                     }
@@ -213,7 +211,6 @@ fun TagManageScreen(
                                     TagStore.remove(context, old)
                                     TagStore.add(context, now)
                                 }
-                                snackbar.show("已更新：$now")
                             }
                             dialog = null
                         }
@@ -222,10 +219,7 @@ fun TagManageScreen(
                 is TagDialog.Delete -> {
                     val name = current.tag
                     dialog = null
-                    scope.launch {
-                        TagStore.remove(context, name)
-                        snackbar.show("已删除：$name")
-                    }
+                    scope.launch { TagStore.remove(context, name) }
                 }
                 null -> Unit
             }

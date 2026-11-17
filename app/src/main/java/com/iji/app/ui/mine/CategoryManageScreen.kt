@@ -290,7 +290,6 @@ fun CategoryManageScreen(
                             val ok = CategoryCatalog.reorder(context, orderedIds)
                             if (ok) {
                                 refresh++
-                                snackbar.show("排序已保存")
                             } else {
                                 snackbar.show("排序保存失败，请重试")
                             }
@@ -478,7 +477,7 @@ fun CategoryManageScreen(
                 showRestoreConfirm = false
                 expandedParentId = null
                 refresh++
-                snackbar.show(if (ok) "已恢复默认分类" else "恢复失败，请重试")
+                if (!ok) snackbar.show("恢复失败，请重试")
             },
         )
     }
@@ -520,7 +519,6 @@ fun CategoryManageScreen(
                             pendingDelete = null
                             expandedParentId = null
                             refresh++
-                            snackbar.show("已删除「${category.name}」")
                         } else {
                             // 失败时保留弹窗与统计：用户重试即可，不会出现"以为删了其实没删"
                             snackbar.show("删除失败，请重试")

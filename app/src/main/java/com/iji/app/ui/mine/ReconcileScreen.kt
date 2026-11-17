@@ -38,7 +38,6 @@ import com.iji.app.MainViewModel
 import com.iji.app.data.model.Transaction
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.IjiDialog
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.TransactionRow
 import com.iji.app.ui.components.WheelOptionDialog
 import com.iji.app.ui.components.ijiTopBarContentPadding
@@ -77,7 +76,6 @@ fun ReconcileScreen(
     onBack: () -> Unit,
     app: MainViewModel = sharedMainViewModel(),
 ) {
-    val snackbar = LocalSnackbarController.current
     val accounts by app.accounts.collectAsStateWithLifecycle()
     val transactions by app.transactions.collectAsStateWithLifecycle()
 
@@ -207,10 +205,7 @@ fun ReconcileScreen(
                     tx = tx,
                     reconciled = false,
                     showAccount = scope == RECONCILE_ALL_ACCOUNTS,
-                    onToggle = {
-                        app.setReconciled(tx, true)
-                        snackbar.show("已标记为已对账")
-                    },
+                    onToggle = { app.setReconciled(tx, true) },
                 )
             }
 
@@ -229,10 +224,7 @@ fun ReconcileScreen(
                         tx = tx,
                         reconciled = true,
                         showAccount = scope == RECONCILE_ALL_ACCOUNTS,
-                        onToggle = {
-                            app.setReconciled(tx, false)
-                            snackbar.show("已取消对账标记")
-                        },
+                        onToggle = { app.setReconciled(tx, false) },
                     )
                 }
             }
@@ -258,7 +250,6 @@ fun ReconcileScreen(
             val list = pending
             app.markAllReconciled(list)
             showConfirmAll = false
-            snackbar.show("已把 ${list.size} 笔标记为已对账")
         },
     ) {
         Text(

@@ -52,10 +52,12 @@ import java.io.File
 /**
  * 「调整头像」子页：中央圆形高亮 + 四周压暗。
  * 图片按 fit 完整显示（圆外压暗可见），1x 禁止平移；放大后拖动限制在「盖满圆形」范围内。
- * 保存时按当前缩放/平移裁出 512 圆形头像，成功后立即回写 [ProfileState] 并返回。
+ * 保存时按当前缩放/平移裁出 512 圆形头像；[onSaved] 为 null（「我的」页）时立即回写
+ * [ProfileState] 并返回，非 null（引导配置页）时结果只交给回调 —— 引导是页内草稿，
+ * 跳过 / 取消不能改掉真实头像，也不能删掉现役头像文件。
  */
 @Composable
-fun AvatarEditScreen(uri: String, onBack: () -> Unit) {
+fun AvatarEditScreen(uri: String, onBack: () -> Unit, onSaved: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     val snackbar = LocalSnackbarController.current
     val scope = rememberCoroutineScope()
@@ -95,12 +97,11 @@ fun AvatarEditScreen(uri: String, onBack: () -> Unit) {
                     saving = true
                     // 裁剪/压缩/落盘必须离开主线程
                     scope.launch(Dispatchers.IO) {
-                        val saved = saveAvatar(context, cropCircle(src, s, o, box))
+                        val saved = saveAvatar(context, cropCircle(src, s, o, box), deleteOthers = onSaved == null)
                         withContext(Dispatchers.Main) {
                             saving = false
                             if (saved != null) {
-                                ProfileState.setAvatarUri(context, saved)
-                                snackbar.show("头像已更新")
+                                if (onSaved != null) onSaved(saved) else ProfileState.setAvatarUri(context, saved)
                                 onBack()
                             } else {
                                 snackbar.show("保存失败，请重试")
@@ -309,8 +310,13 @@ private fun decodeSampled(uriString: String, context: Context): Bitmap? =
         null
     }
 
-/** 写入私有目录并清理历史头像，返回 file:// URI；文件名带时间戳以避免 Coil 命中旧缓存 */
-private fun saveAvatar(context: Context, bmp: Bitmap): String? =
+/**
+ * 写入私有目录并返回 file:// URI；文件名带时间戳以避免 Coil 命中旧缓存。
+ * [deleteOthers] 控制是否顺手清理其它 avatar_ 文件：引导页的裁剪结果只是页内草稿，
+ * ProfileState 此刻仍指向现役头像文件（重配场景下取消配置要能原样回去），因此不能删；
+ * 引导过程产生的孤儿文件沿用既有约定，待下次在「我的」页换头像时统一清理。
+ */
+private fun saveAvatar(context: Context, bmp: Bitmap, deleteOthers: Boolean): String? =
     runCatching {
         val dir = File(context.filesDir, "avatar").apply { mkdirs() }
         val file = File(dir, "avatar_${System.currentTimeMillis()}.png")
@@ -319,7 +325,9 @@ private fun saveAvatar(context: Context, bmp: Bitmap): String? =
             file.delete()
             return@runCatching null
         }
-        dir.listFiles()?.filter { it.isFile && it.name.startsWith("avatar_") && it != file }
-            ?.forEach { it.delete() }
+        if (deleteOthers) {
+            dir.listFiles()?.filter { it.isFile && it.name.startsWith("avatar_") && it != file }
+                ?.forEach { it.delete() }
+        }
         Uri.fromFile(file).toString()
     }.getOrNull()

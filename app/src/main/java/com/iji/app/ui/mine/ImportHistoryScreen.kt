@@ -94,8 +94,8 @@ fun ImportHistoryScreen(
                                 IjiTextAction(
                                     text = "重新导入",
                                     onClick = {
-                                        viewModel.reimportBatch(batch) { _, msg ->
-                                            snackbar.show(msg)
+                                        viewModel.reimportBatch(batch) { ok, msg ->
+                                            if (!ok) snackbar.show(msg)
                                         }
                                     },
                                     enabled = batch.canReimport,
@@ -126,7 +126,7 @@ fun ImportHistoryScreen(
         onConfirm = {
             pendingUndo?.let { batch ->
                 pendingUndo = null
-                viewModel.undoImportBatch(batch) { _, msg -> snackbar.show(msg) }
+                viewModel.undoImportBatch(batch) { ok, msg -> if (!ok) snackbar.show(msg) }
             }
         },
     )
@@ -142,7 +142,7 @@ fun ImportHistoryScreen(
             pendingDelete?.let { batch ->
                 pendingDelete = null
                 if (expandedId == batch.id) expandedId = null
-                viewModel.deleteImportBatch(batch) { _, msg -> snackbar.show(msg) }
+                viewModel.deleteImportBatch(batch) { ok, msg -> if (!ok) snackbar.show(msg) }
             }
         },
     )

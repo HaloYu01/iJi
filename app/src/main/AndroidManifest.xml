@@ -23,6 +23,14 @@
     <!-- 权限检验页：跳转「忽略电池优化」直接申请弹窗（ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
          的前置声明；未声明时 startActivity 直接抛 SecurityException） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 全自动记账的常驻状态服务：前台服务让进程不随「清理最近任务」一起被杀；
+         API 34+ 必须声明具体 type，这里用 specialUse 并在 service 里说明用途 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 无障碍自愈（对齐钱迹）：普通安装拿不到，需要用户执行一次
+         `adb shell pm grant <包名> android.permission.WRITE_SECURE_SETTINGS`。
+         未授权时该权限被忽略，代码会回落到 Shizuku / 跳系统设置，不会报错 -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
     <!-- 应用内更新：下载完新版本后拉起系统安装器。未声明时 ACTION_VIEW 安装 Intent
          会被系统直接拒绝（连「安装未知应用」开关都不会出现） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -126,6 +134,23 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/volume_key_accessibility_service" />
         </service>
+
+        <!-- 全自动记账的常驻状态：前台服务，只负责「运行中 / 已被系统关闭」的可观测性
+             与进程优先级，不采集任何数据；关掉总闸或切到半自动即停止 -->
+        <service
+            android:name=".autorecord.AutoRecordStatusService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Show whether automatic bookkeeping is running and how to recover it" />
+        </service>
+
+        <!-- 通知上的「恢复」动作：不依赖无障碍服务进程，点一下就能把服务写回系统设置
+             （对齐钱迹的 AutoRecordToggleReceiver）；只由本应用的 PendingIntent 触发 -->
+        <receiver
+            android:name=".autorecord.AutoRecoverReceiver"
+            android:exported="false" />
 
         <!-- 通知动作（记一笔 / 忽略）的接收端；应用进程被杀时也能收到 -->
         <receiver

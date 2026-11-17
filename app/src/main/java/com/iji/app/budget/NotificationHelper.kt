@@ -1,6 +1,7 @@
 package com.iji.app.budget
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -168,6 +169,14 @@ object NotificationHelper {
             true
         }
 
+    /** 通知唯一落点：先查权限再发送，未授权静默跳过（runCatching 兜系统级失败） */
+    @SuppressLint("MissingPermission")
+    private fun postSafely(context: Context, id: Int, notification: Notification) {
+        if (canPostNotifications(context)) {
+            runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
+        }
+    }
+
     /**
      * 发送一条预算告警通知。
      *
@@ -239,9 +248,7 @@ object NotificationHelper {
             .setOnlyAlertOnce(true) // 同一 id 重复更新时不再次响铃，避免同一周期反复打扰
             .build()
 
-        runCatching {
-            NotificationManagerCompat.from(context).notify(id, notification)
-        }
+        postSafely(context, id, notification)
         return true
     }
 
@@ -511,7 +518,7 @@ object NotificationHelper {
                 ).build(),
             )
         }
-        runCatching { NotificationManagerCompat.from(context).notify(SCREENSHOT_NOTIFICATION_ID, builder.build()) }
+        postSafely(context, SCREENSHOT_NOTIFICATION_ID, builder.build())
         return true
     }
 
@@ -566,7 +573,7 @@ object NotificationHelper {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()
-        runCatching { NotificationManagerCompat.from(context).notify(RECURRING_NOTIFICATION_ID, notification) }
+        postSafely(context, RECURRING_NOTIFICATION_ID, notification)
         return true
     }
 

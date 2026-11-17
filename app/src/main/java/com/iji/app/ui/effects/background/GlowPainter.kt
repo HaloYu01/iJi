@@ -16,6 +16,8 @@ import kotlin.math.sin
  * 因此直接使用平台类 [RuntimeShader]（AGSL，Android 13+）配合 [ShaderBrush]，
  * shader 源码与全部 uniform 语义保持原样。
  */
+// 自降级：shader 在 <33 恒为 null、各方法随之早退，无需层层 @RequiresApi
+@Suppress("NewApi")
 internal class GlowPainter {
 
     /** AGSL 需要 Android 13+；创建失败时整体降级为纯色背景 */

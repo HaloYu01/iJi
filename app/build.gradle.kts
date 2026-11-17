@@ -33,13 +33,14 @@ android {
     defaultConfig {
         // 应用身份，2026-11-13 由 com.iji.app 迁来；namespace（代码包）不变
         applicationId = "com.haloyu.iji"
-        minSdk = 33
+        // 2026-11-13 从 33 降为 30，兼容 Android 11+
+        minSdk = 30
         // 36 = Live Updates（原生实况通知）最低 targetSdk；36 的行为变化只有预测性返回默认开启
         targetSdk = 36
         // 版本口径：versionName 与 AboutData.changelogData 的第一条必须对应；
         // 发布日期只记在更新日志里，页面通过 changelogOf(versionName) 取，不另设常量。
-        versionCode = 4
-        versionName = "1.0.0"
+        versionCode = 5
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -114,8 +115,6 @@ dependencies {
     implementation(libs.miuix.ui)
     // Miuix squircle 平滑圆角
     implementation(libs.miuix.squircle)
-    // Miuix 模糊效果（液态玻璃）
-    implementation(libs.miuix.blur)
     // Miuix 弹层（OverlayDialog / OverlayBottomSheet）内部使用 NavigationBackHandler，
     // 必须在 Activity 组合根提供 LocalNavigationEventDispatcher（见 MainActivity），
     // 否则弹层显示时崩溃。版本与 Miuix 0.9.3 解析结果保持一致（1.1.2）。

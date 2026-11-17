@@ -1,10 +1,12 @@
 package com.iji.app.accessibility
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import android.text.TextUtils
+import android.view.accessibility.AccessibilityManager
 
 /**
  * 无障碍服务的启用状态查询、系统设置跳转，以及「音量键快捷键」绑定状态查询。
@@ -36,6 +38,29 @@ object PaymentAccessibilityStatus {
         val splitter = TextUtils.SimpleStringSplitter(':')
         splitter.setString(enabled)
         return splitter.any { it.equals(expected, ignoreCase = true) }
+    }
+
+    /**
+     * 服务是否**真的**被系统绑定在运行（钱迹 `RUNNING` 的判定方式）。
+     *
+     * 与 [isEnabled] 的区别：isEnabled 读的是用户开关，本方法读的是
+     * `AccessibilityManager` 里实际已绑定的服务列表。开关开着但服务被冻结、
+     * 被系统限制或尚未重新绑定时，isEnabled 为 true 而本方法为 false——
+     * 这正是「设置里开着、页面却显示没连上」的那种情况。
+     */
+    fun isRunning(context: Context): Boolean {
+        val manager = runCatching {
+            context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+        }.getOrNull() ?: return false
+        val expected = serviceComponent(context)
+        return runCatching {
+            manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                .any { info ->
+                    val service = info.resolveInfo?.serviceInfo ?: return@any false
+                    service.packageName == expected.packageName &&
+                        service.name == expected.className
+                }
+        }.getOrDefault(false)
     }
 
     /** 跳转系统「无障碍」设置页，让用户手动开启（应用无法代替用户授权） */

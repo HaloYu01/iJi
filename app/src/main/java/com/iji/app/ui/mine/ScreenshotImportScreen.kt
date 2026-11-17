@@ -298,10 +298,7 @@ fun ScreenshotImportScreen(
                     ) { ok, failed ->
                         importing = false
                         drafts.clear()
-                        snackbar.show(
-                            if (failed == 0) "已导入 $ok 笔"
-                            else "已导入 $ok 笔，失败 $failed 笔",
-                        )
+                        if (failed > 0) snackbar.show("已导入 $ok 笔，失败 $failed 笔")
                     }
                 },
             )

@@ -92,6 +92,9 @@ object ScreenCaptureFlow {
      * 无障碍服务未连接时直接返回 false，由界面提示「请先开启无障碍」——
      * 绝不在没有能力的情况下假装截了。
      *
+     * 这条链路只服务**半自动**（用户主动触发）。全自动走的是
+     * `AutoBillEngine` 的节点识别，不截屏、不经过这里。
+     *
      * @return 是否成功发起（已有一个请求在跑、或服务未连接时返回 false）
      */
     fun start(context: Context, delayMillis: Long = DEFAULT_DELAY_MS): Boolean {
@@ -151,6 +154,7 @@ object ScreenCaptureFlow {
                     report(appContext, "截屏失败", "没能取到屏幕画面（授权可能已失效，或系统拒绝），可改用相册选图")
                     return@launch
                 }
+                withContext(Dispatchers.Main) { BillOverlay.showLoading(appContext) }
                 // 图拿到了，OCR/解析还要几秒：把岛刷成「正在识别」，别让用户以为卡住了
                 if (islandShown) {
                     NotificationHelper.showScreenshotProgress(
@@ -227,6 +231,7 @@ object ScreenCaptureFlow {
                             islandDetail = billDetail,
                             islandSummary = billSummary,
                             islandIcon = islandIcon,
+                            inAppNotice = false,
                         )
                     }
                     else -> {
@@ -252,7 +257,12 @@ object ScreenCaptureFlow {
                         }
                         if (!shownInOverlay) {
                             _drafts.value = found
-                            report(appContext, "截屏识别完成$sourceHint", "识别到 ${found.size} 笔账单，点击核对后再导入")
+                            report(
+                                appContext,
+                                "截屏识别完成$sourceHint",
+                                "识别到 ${found.size} 笔账单，点击核对后再导入",
+                                inAppNotice = false,
+                            )
                         }
                     }
                 }
@@ -260,6 +270,7 @@ object ScreenCaptureFlow {
                 Log.e(TAG, "截屏识别失败", t)
                 report(appContext, "截屏识别失败", t.message ?: "发生未知错误")
             } finally {
+                withContext(Dispatchers.Main) { BillOverlay.dismissLoading() }
                 _capturing.value = false
                 // 进度岛必须先撤：结果通知（9102）走的是另一条 id，
                 // 留着它就会变成「识别已完成」旁边还挂着一个「正在识别」
@@ -292,8 +303,9 @@ object ScreenCaptureFlow {
         islandSummary: String? = null,
         /** 大岛左侧大图标（当前识别到的类别图标）；null = 应用图标 */
         islandIcon: android.graphics.drawable.Icon? = null,
+        inAppNotice: Boolean = true,
     ) {
-        _notice.value = "$title：$body"
+        if (inAppNotice) _notice.value = "$title：$body"
         NotificationHelper.sendScreenshotNotice(
             context = context,
             title = title,

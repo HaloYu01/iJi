@@ -81,10 +81,7 @@ fun BillImportPreviewScreen(
         val done: (Int, Int) -> Unit = { ok, failed ->
             importing = false
             BillImportDraftHolder.clear()
-            snackbar.show(
-                "已导入 $ok 笔" + if (failed > 0) " · 失败 $failed 笔" else "",
-                duration = SnackbarDuration.Long,
-            )
+            if (failed > 0) snackbar.show("导入完成，失败 $failed 笔", duration = SnackbarDuration.Long)
             onBack()
         }
         if (d.isOcr) {

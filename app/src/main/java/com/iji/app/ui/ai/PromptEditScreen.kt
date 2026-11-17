@@ -72,14 +72,12 @@ fun PromptEditScreen(kindKey: String, onBack: () -> Unit) {
         // 与默认逐字一致 → 存空，视为「使用默认」，不制造无意义的自定义副本
         val value = draft.trim().let { if (it == kind.defaultText.trim()) "" else it }
         AiConfig.setPromptCustom(context, kind, value)
-        snackbar.show("提示词已保存")
         onBack()
     }
 
     fun resetToDefault() {
         AiConfig.setPromptCustom(context, kind, "")
         draft = ""
-        snackbar.show("已恢复默认提示词")
     }
 
     MineSubPage(

@@ -77,6 +77,7 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.isRuntimeShaderSupported
 import com.iji.app.ui.effects.edgelight.edgeLight
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -425,7 +426,8 @@ fun LiquidBottomTabs(
                         // Mirror：默认的 Clamp 会把边缘采样钳到最外一行，边缘一圈模糊退化
                         blur(glassBlur.dp.toPx(), TileMode.Mirror)
                         padding = 0f
-                        if (chromeLens) {
+                        // RuntimeShader 仅 33+；低版本跳过折射，模糊自身会降级
+                        if (chromeLens && isRuntimeShaderSupported()) {
                             refractionScaleRef[0] = downsampleScale
                             refractionShaderRef[0] =
                                 obtainRuntimeShader("BottomBarRefraction", BottomBarRefractionShader)

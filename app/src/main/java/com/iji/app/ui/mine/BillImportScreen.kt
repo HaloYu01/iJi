@@ -235,10 +235,7 @@ fun BillImportScreen(
                 saveToDownloads(context, name, "text/csv", csv) != null
             }
             busy = false
-            snackbar.show(
-                if (ok) "已保存到 下载/$name（CSV，Excel 可直接打开）" else "保存失败：请检查存储空间",
-                duration = SnackbarDuration.Long,
-            )
+            if (!ok) snackbar.show("保存失败：请检查存储空间", duration = SnackbarDuration.Long)
         }
     }
 
@@ -390,10 +387,7 @@ fun BillImportScreen(
         onConfirm = {
             showTemplateConfirm = false
             val ok = saveCsvTemplate(context) != null
-            snackbar.show(
-                if (ok) "模板已保存到 下载" else "模板保存失败",
-                duration = SnackbarDuration.Long,
-            )
+            if (!ok) snackbar.show("模板保存失败", duration = SnackbarDuration.Long)
         },
     )
 }

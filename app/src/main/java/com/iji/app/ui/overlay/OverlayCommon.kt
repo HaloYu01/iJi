@@ -164,11 +164,12 @@ internal fun Modifier.pressableScale(
 @Composable
 internal fun OverlayShell(
     onDismissed: () -> Unit,
+    animateEntry: Boolean = true,
     content: @Composable ColumnScope.(onRequestClose: () -> Unit) -> Unit,
 ) {
-    var appeared by remember { mutableStateOf(false) }
+    var appeared by remember { mutableStateOf(!animateEntry) }
     var exiting by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { appeared = true }
+    LaunchedEffect(Unit) { if (animateEntry) appeared = true }
     LaunchedEffect(exiting) {
         if (exiting) {
             delay(150)

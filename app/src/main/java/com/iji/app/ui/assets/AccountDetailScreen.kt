@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -58,11 +57,13 @@ import com.iji.app.data.model.Transaction
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.add.AddTransactionSheet
+import com.iji.app.ui.components.BillDetailDialog
 import com.iji.app.ui.components.ContentState
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.StateView
 import com.iji.app.ui.components.TransactionRow
+import com.iji.app.ui.components.formatDay
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.components.ijiButtonFocusRing
 import com.iji.app.ui.theme.LocalDimens
@@ -78,16 +79,12 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import java.time.LocalDate
 import com.iji.app.ui.util.sharedMainViewModel
 
-/**
- * 账户详情页：当前余额 + 最近交易记录 + 新增一笔交易 + 导出 / 编辑账户。
- * 顶栏右上角点状菜单提供「编辑账户」「导出 CSV」。
- */
+/** 账户详情页 */
 @Composable
 fun AccountDetailScreen(
     accountId: Long,
     onBack: () -> Unit = {},
     onNavigateEdit: (Long) -> Unit = {},
-    /** 进入对账页，并把本账户预选为作用域 */
     onNavigateReconcile: (String) -> Unit = {},
     app: MainViewModel = sharedMainViewModel(),
     viewModel: AssetsViewModel = viewModel(
@@ -109,18 +106,13 @@ fun AccountDetailScreen(
         if (account == null) {
             emptyList()
         } else {
-            // 组合付款要归入**每个**参与账户，否则只会在首选账户下出现，
-            // 另一个账户的流水看起来凭空少了一笔
             transactions.filter { tx ->
                 tx.account == account.name || tx.splits.any { it.account == account.name }
-            }.sortedByDescending { it.id }
+            }.sortedWith(compareByDescending<Transaction> { it.date }.thenByDescending { it.id })
         }
     }
 
-    /**
-     * 本账户在这笔账里实际承担的分额（分）。
-     * 非组合付款即整笔金额；组合付款取本账户那条拆分，取不到时退化为整笔（不应发生）。
-     */
+    /** 本账户在这笔账里实际承担的分额（分） */
     fun accountShareCents(tx: Transaction): Long {
         val name = account?.name ?: return tx.amountCents
         if (tx.splits.isEmpty()) return tx.amountCents
@@ -149,8 +141,13 @@ fun AccountDetailScreen(
     var showAdd by remember { mutableStateOf(false) }
     // 交易分页：原先直接 take(50) 静默截断，用户会以为只有 50 笔
     var visibleCount by remember(accountId) { mutableStateOf(DETAIL_PAGE_SIZE) }
+    val groupedTxs = remember(accountTxs, visibleCount) {
+        accountTxs.take(visibleCount).groupBy { it.date }.entries.sortedByDescending { it.key }
+    }
     // 附件查看器：账单 + 从第几张开始看
     var viewingAttachments by remember { mutableStateOf<Pair<Transaction, Int>?>(null) }
+    var detailTx by remember { mutableStateOf<Transaction?>(null) }
+    var editTx by remember { mutableStateOf<Transaction?>(null) }
 
     // 导出该账户全部交易为 CSV（保存位置由系统选择器决定）
     val exportLauncher = rememberLauncherForActivityResult(
@@ -173,7 +170,6 @@ fun AccountDetailScreen(
                 context.contentResolver.openOutputStream(it)?.use { stream ->
                     stream.write(csv.toByteArray())
                 }
-                snackbar.show("已导出 ${accountTxs.size} 条交易")
             } catch (e: Exception) {
                 snackbar.show("导出失败：${e.message}")
             }
@@ -363,19 +359,41 @@ fun AccountDetailScreen(
                     )
                 }
             } else {
-                items(accountTxs.take(visibleCount), key = { it.id }) { tx ->
-                    TransactionRow(
-                        tx = tx,
-                        subtitle = runCatching { CategoryCatalog.of(tx.categoryId).name }
-                            .getOrDefault(tx.categoryId),
-                        // 只显示本账户分担额；整额的话两个账户的流水加起来会翻倍
-                        amountOverrideCents = if (tx.splits.size > 1) accountShareCents(tx) else null,
-                        onOpenAttachments = if (tx.attachments.isNotEmpty()) {
-                            { index -> viewingAttachments = tx to index }
-                        } else {
-                            null
-                        },
-                    )
+                groupedTxs.forEach { (date, txs) ->
+                    item(key = "day-$date") {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(Radius.sheet))
+                                .background(MaterialTheme.colorScheme.surface),
+                        ) {
+                            Text(
+                                text = formatDay(date),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            )
+                            txs.forEachIndexed { index, tx ->
+                                if (index > 0) Box(
+                                    Modifier.fillMaxWidth().height(0.5.dp)
+                                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
+                                )
+                                TransactionRow(
+                                    modifier = Modifier.clickable { detailTx = tx },
+                                    tx = tx,
+                                    subtitle = runCatching { CategoryCatalog.of(tx.categoryId).name }
+                                        .getOrDefault(tx.categoryId),
+                                    amountOverrideCents = if (tx.splits.size > 1) accountShareCents(tx) else null,
+                                    onOpenAttachments = if (tx.attachments.isNotEmpty()) {
+                                        { i -> viewingAttachments = tx to i }
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -442,6 +460,36 @@ fun AccountDetailScreen(
         show = showAdd,
         onDismiss = { showAdd = false },
         prefillAccount = account?.name,
+    )
+
+    BillDetailDialog(
+        tx = detailTx,
+        onDismiss = { detailTx = null },
+        onEdit = {
+            detailTx = null
+            editTx = it
+        },
+    )
+
+    AddTransactionSheet(
+        show = editTx != null,
+        existing = editTx,
+        onDismiss = { editTx = null },
+        onConfirm = { draft ->
+            editTx?.let { tx ->
+                app.updateTransaction(
+                    tx, draft.type, draft.categoryId, draft.amountCents, draft.note,
+                    draft.account, draft.tags, draft.date, draft.excludeFromStats,
+                    draft.excludeFromBudget, draft.reimburse, draft.discountCents, draft.attachments,
+                    draft.merchant, draft.counterparty, draft.counterpartyContact, draft.counterpartyOrg,
+                    draft.reimburseState, draft.reconciled,
+                    ledgerId = draft.ledgerId, transferToAccount = draft.transferToAccount,
+                    splits = draft.splits, refundOfId = draft.refundOfId,
+                    minuteOfDay = draft.minuteOfDay,
+                )
+            }
+            editTx = null
+        },
     )
 
     val viewing = viewingAttachments

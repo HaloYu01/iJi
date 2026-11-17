@@ -8,6 +8,8 @@ import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.Radius
 
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -38,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -173,7 +176,6 @@ fun CrashLogScreen(
                 text = "清除",
                 onClick = {
                     CrashLogger.clearCrashLogs(context)
-                    snackbar.show("日志已清除")
                     onBack()
                 },
                 compact = true,
@@ -276,7 +278,6 @@ fun AboutScreen(
                 context.contentResolver.openOutputStream(it)?.use { stream ->
                     stream.write(logs.toByteArray())
                 }
-                snackbar.show("日志导出成功")
             } catch (e: Exception) {
                 snackbar.show("导出失败：${e.message}", duration = SnackbarDuration.Long)
             }
@@ -291,32 +292,13 @@ fun AboutScreen(
             null
         }
     }
-    val appName = remember {
-        packageInfo?.applicationInfo?.labelRes?.let { context.getString(it) }
-            ?: context.applicationInfo?.nonLocalizedLabel?.toString()
-            ?: "i记"
-    }
+    // stringResource 随配置重组（比 LocalContext 读资源更合规）
+    val appName = packageInfo?.applicationInfo?.labelRes?.let { stringResource(it) }
+        ?: context.applicationInfo?.nonLocalizedLabel?.toString()
+        ?: "i记"
     // 版本号取自安装包，页面不写死任何版本常量（改版本只改 build.gradle.kts）。
     val appVersion = remember { currentVersionInfo(context).versionName }
-    val appIcon = remember {
-        val drawable = try {
-            context.packageManager.getApplicationIcon(context.packageName)
-        } catch (_: Exception) {
-            context.applicationInfo.icon
-                .takeIf { it != 0 }
-                ?.let { id -> runCatching { context.getDrawable(id) }.getOrNull() }
-        }
-        if (drawable != null) {
-            val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 1)
-            val bitmap = createBitmap(size, size)
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, size, size)
-            drawable.draw(canvas)
-            cropBitmapToOpaque(bitmap).asImageBitmap()
-        } else {
-            null
-        }
-    }
+    val appIcon = remember { appIconBitmap(context) }
 
     // 头部（图标 / 名称 / 版本）与背景光效随滚动淡出缩小。
     //
@@ -873,6 +855,25 @@ private fun AboutDivider(startPadding: Dp = 20.dp) {
 }
 
 /** 裁掉 AdaptiveIcon 画布四周透明区域，避免关于页图标显得过小。 */
+/** 应用图标转位图（取不到时 null）。单语言应用，读一次即终值，故豁免配置态资源检查。 */
+@SuppressLint("LocalResourceConfiguration")
+private fun appIconBitmap(context: Context): ImageBitmap? {
+    val drawable = try {
+        context.packageManager.getApplicationIcon(context.packageName)
+    } catch (_: Exception) {
+        context.applicationInfo.icon
+            .takeIf { it != 0 }
+            ?.let { id -> runCatching { context.getDrawable(id) }.getOrNull() }
+    }
+    if (drawable == null) return null
+    val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 1)
+    val bitmap = createBitmap(size, size)
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, size, size)
+    drawable.draw(canvas)
+    return cropBitmapToOpaque(bitmap).asImageBitmap()
+}
+
 private fun cropBitmapToOpaque(source: Bitmap): Bitmap {
     val width = source.width
     val height = source.height
@@ -924,12 +925,12 @@ private fun ThanksItem(
                     Modifier
                 }
             )
-            .padding(vertical = 9.dp),
+            .padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = item.name,
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             // 有链接才用链接色：链接色 + 可点 = 链接；无链接保持正文色
             color = if (linked) ThanksLinkColor else MaterialTheme.colorScheme.onSurface,
@@ -938,7 +939,7 @@ private fun ThanksItem(
         if (item.author.isNotBlank()) {
             Text(
                 text = item.author,
-                fontSize = 12.5.sp,
+                fontSize = 11.5.sp,
                 color = TextSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

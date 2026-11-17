@@ -167,7 +167,7 @@ internal fun ParseResultCard(
         }
         val ruleType = if (type == "income") LocalRule.TYPE_INCOME else LocalRule.TYPE_EXPENSE
         val ok = LocalRuleStore.rememberCategory(context, keyword, category, ruleType)
-        snackbar.show(if (ok) "已记住：$keyword → $category" else "记住分类失败")
+        if (!ok) snackbar.show("记住分类失败")
     }
 
     /** 编辑后的完整结果：保存与详细编辑带同一份，双轨不改字面 */

@@ -10,6 +10,7 @@ import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import android.annotation.SuppressLint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -200,6 +201,9 @@ object Routes {
  * 也不会在用户下次进入资产页时重复触发高亮。
  */
 private const val KEY_HIGHLIGHT_ACCOUNT = "highlightAccountId"
+// 「调整头像」子页回传给引导配置页的一次性结果（裁剪后的 file:// 头像路径）：
+// 经栈底向导条目的 savedStateHandle 走「导航一次性结果」模式，向导重组后写进草稿并消费
+private const val KEY_ONBOARDING_AVATAR = "onboardingAvatarUri"
 
 /** 主 tab 路由（顺序 = 底栏顺序）：决定底栏显隐，也决定 tab 转场的滑动方向 */
 private val TabOrder = listOf(Routes.HOME, Routes.ASSETS, Routes.CALENDAR, Routes.STATS)
@@ -305,6 +309,13 @@ private fun routeForTabIndex(index: Int): String = when (index) {
     else -> Routes.HOME
 }
 
+/** 返回栈里最靠上的主 tab（子页面沿用进入前的 tab）。公开 API 拿不到整条栈，此处读受限的 currentBackStack。 */
+@SuppressLint("RestrictedApi")
+private fun topTabIndex(navController: NavHostController, tabRoutes: Set<String>): Int =
+    navController.currentBackStack.value
+        .lastOrNull { it.destination.route in tabRoutes }
+        ?.destination?.route?.let(::tabIndexForRoute) ?: 0
+
 @Composable
 fun IjiApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -351,24 +362,8 @@ fun IjiApp() {
             fingerprintAvailable = fingerprintAvailable,
             fingerprintEnabled = fingerprintEnabled,
             onFingerprintClick = {
-                // 平台 BiometricPrompt 只需要 Activity 作 Context，无需 FragmentActivity。
-                // 这两处**刻意用 Toast**：此时界面还停在 LockScreen，Scaffold 与 SnackbarHost
-                // 尚未渲染，改成 snackbar 会变成"什么都没出现"。
-                val act = activity
-                if (act != null) {
-                    AppLockManager.showFingerprintPrompt(
-                        act,
-                        onSuccess = { unlocked = true },
-                        onError = { msg ->
-                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
-                        },
-                    )
-                } else {
-                    android.widget.Toast.makeText(
-                        context,
-                        "指纹解锁不可用，请使用密码",
-                        android.widget.Toast.LENGTH_SHORT,
-                    ).show()
+                activity?.let {
+                    AppLockManager.showFingerprintPrompt(it, onSuccess = { unlocked = true })
                 }
             },
         )
@@ -406,7 +401,12 @@ fun IjiApp() {
     }
 
     val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route ?: Routes.HOME
+    // 首帧 NavHost 还没解析出栈顶条目，这里必须回落到**真实的 startDestination**：
+    // 写死 HOME 的话，冷启动直接进引导页时第一帧按 HOME 算 showBottomBar=true，
+    // 第二帧才翻成 ONBOARDING 收回去 —— 底栏「弹出又滑走」闪一下（已踩过）。
+    // 回落值与 startDestination 一致后，引导首帧就是 hidden，正常启动首帧仍是 HOME、无变化。
+    val currentRoute = backStackEntry?.destination?.route
+        ?: if (onboardingState == SettingsRepository.ONBOARDING_PENDING) Routes.ONBOARDING else Routes.HOME
 
     // 主 tab 路由（顺序 = 底栏顺序）：决定底栏显隐，也决定 tab 转场的滑动方向
     val tabOrder = TabOrder
@@ -416,11 +416,7 @@ fun IjiApp() {
     // 选中项取返回栈里最靠上的主 tab：停在「我的」等子页时沿用进入前的 tab。
     // 不能直接用 tabIndexForRoute(currentRoute)——它对非 tab 路由回落到 0，
     // 底栏退场动画期间指示器会跳回「账本」。
-    val selectedTab = remember(backStackEntry) {
-        navController.currentBackStack.value
-            .lastOrNull { it.destination.route in tabRoutes }
-            ?.destination?.route?.let(::tabIndexForRoute) ?: 0
-    }
+    val selectedTab = remember(backStackEntry) { topTabIndex(navController, tabRoutes) }
 
     // 全站转场（push 400ms / pop 250ms / tab 250ms；低内存设备自动降级）
     val motion = NavMotion.remember(tabOrder)
@@ -602,9 +598,20 @@ fun IjiApp() {
                     )
                 }
                 // 首次启动引导：完成 / 跳过都把引导出栈后落主页（onCancel 在首启模式下不会被调用）
-                ijiRoute(Routes.ONBOARDING) {
+                ijiRoute(Routes.ONBOARDING) { entry ->
+                    val avatarResult by entry.savedStateHandle
+                        .getStateFlow<String?>(KEY_ONBOARDING_AVATAR, null)
+                        .collectAsStateWithLifecycle()
                     OnboardingWizardScreen(
                         reconfigure = false,
+                        avatarResult = avatarResult,
+                        onAvatarResultConsumed = {
+                            entry.savedStateHandle[KEY_ONBOARDING_AVATAR] = null
+                        },
+                        onPickAvatarImage = { uri ->
+                            // uri 含特殊字符，必须编码后再作为导航参数，否则路由解析会截断
+                            navController.navigate(Routes.AVATAR_EDIT.replace("{uri}", Uri.encode(uri.toString())))
+                        },
                         onFinish = {
                             navController.navigate(Routes.HOME) {
                                 popUpTo(Routes.ONBOARDING) { inclusive = true }
@@ -615,9 +622,19 @@ fun IjiApp() {
                     )
                 }
                 // 重配：完成覆盖现有配置后回主页；取消不写任何东西、回引导教程页
-                ijiRoute(Routes.ONBOARDING_RECONFIGURE) {
+                ijiRoute(Routes.ONBOARDING_RECONFIGURE) { entry ->
+                    val avatarResult by entry.savedStateHandle
+                        .getStateFlow<String?>(KEY_ONBOARDING_AVATAR, null)
+                        .collectAsStateWithLifecycle()
                     OnboardingWizardScreen(
                         reconfigure = true,
+                        avatarResult = avatarResult,
+                        onAvatarResultConsumed = {
+                            entry.savedStateHandle[KEY_ONBOARDING_AVATAR] = null
+                        },
+                        onPickAvatarImage = { uri ->
+                            navController.navigate(Routes.AVATAR_EDIT.replace("{uri}", Uri.encode(uri.toString())))
+                        },
                         onFinish = {
                             navController.navigate(Routes.HOME) {
                                 popUpTo(Routes.HOME) { inclusive = false }
@@ -753,10 +770,24 @@ fun IjiApp() {
                     Routes.AVATAR_EDIT,
                     arguments = listOf(navArgument("uri") { type = NavType.StringType }),
                 ) { backStack ->
+                    // 「我的」页发起的裁剪直接回写全局 ProfileState；引导配置页发起的只把结果
+                    // 作为一次性导航结果交回栈底向导写进 draft —— 引导是页内预览，跳过 / 取消
+                    // 不能动真实头像（AvatarEditScreen 也就不会清理现役头像文件）
+                    val forOnboarding = navController.previousBackStackEntry?.destination?.route in
+                        setOf(Routes.ONBOARDING, Routes.ONBOARDING_RECONFIGURE)
                     AvatarEditScreen(
                         // Navigation 已对路径参数做过 URL 解码，这里直接用
                         uri = backStack.arguments?.getString("uri").orEmpty(),
                         onBack = { navController.popBackStack() },
+                        onSaved = if (forOnboarding) {
+                            { saved ->
+                                navController.previousBackStackEntry
+                                    ?.savedStateHandle
+                                    ?.set(KEY_ONBOARDING_AVATAR, saved)
+                            }
+                        } else {
+                            null
+                        },
                     )
                 }
                 ijiRoute(Routes.PASSWORD_PROTECT) { PasswordProtectScreen(onBack = { navController.popBackStack() }) }
@@ -986,7 +1017,7 @@ fun IjiApp() {
                 enter = slideInVertically(motion.slideSpring()) { it },
                 exit = slideOutVertically(motion.slideSpring()) { it },
             ) {
-                BoxWithConstraints(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp)

@@ -24,6 +24,15 @@ data class BillDraft(
     val selected: Boolean = true,
     /** 疑似重复时指向库内已有账单 id；null = 判定为新账单 */
     val duplicateOfId: Long? = null,
+    /** 优惠/立减金额（分）；实付 = amountCents，原价 = amountCents + discountCents */
+    val discountCents: Long = 0L,
+    /**
+     * 商户 / 收款方原文。
+     *
+     * 全自动识别会把商户单独存下来：同商户的历史分类复用、商家统计都依赖这一列。
+     * 之前商户被并进 note，落库后 Transaction.merchant 为空，历史分类无从查起。
+     */
+    val merchant: String = "",
 )
 
 /**

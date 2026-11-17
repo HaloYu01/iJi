@@ -35,7 +35,6 @@ import com.iji.app.data.model.ReimburseState
 import com.iji.app.data.model.Transaction
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.CategoryIconImage
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.formatMoney
 import com.iji.app.ui.theme.AppleOrange
 import com.iji.app.ui.theme.AppleRed
@@ -63,7 +62,6 @@ fun ReimburseManageScreen(
     onBack: () -> Unit,
     app: MainViewModel = sharedMainViewModel(),
 ) {
-    val snackbar = LocalSnackbarController.current
     val transactions by app.transactions.collectAsStateWithLifecycle()
 
     val related = transactions.filter { it.reimburseState != ReimburseState.NONE }
@@ -166,14 +164,8 @@ fun ReimburseManageScreen(
                 items(list.size) { index ->
                     ReimburseRow(
                         tx = list[index],
-                        onSettle = {
-                            app.setReimburseState(list[index], ReimburseState.SETTLED)
-                            snackbar.show("已标记结清")
-                        },
-                        onReopen = {
-                            app.setReimburseState(list[index], ReimburseState.PENDING)
-                            snackbar.show("已恢复为待收回")
-                        },
+                        onSettle = { app.setReimburseState(list[index], ReimburseState.SETTLED) },
+                        onReopen = { app.setReimburseState(list[index], ReimburseState.PENDING) },
                     )
                 }
                 item { Spacer(Modifier.height(6.dp)) }

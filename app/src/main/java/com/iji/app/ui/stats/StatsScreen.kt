@@ -79,7 +79,6 @@ import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.components.ContentState
 import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiTopBar
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.IjiTextAction
 import com.iji.app.ui.components.StateView
 import com.iji.app.ui.components.CategoryIconImage
@@ -153,7 +152,6 @@ fun StatsScreen(
     val week by viewModel.selectedWeek.collectAsStateWithLifecycle()
     val month by viewModel.selectedMonth.collectAsStateWithLifecycle()
     val year by viewModel.selectedYear.collectAsStateWithLifecycle()
-    val snackbar = LocalSnackbarController.current
     // 平板 / 横屏（≥600dp）用双列，窄屏单列
     val isWide = LocalConfiguration.current.screenWidthDp >= 600
 
@@ -242,10 +240,7 @@ fun StatsScreen(
                             }
                         },
                         onSelectDimension = viewModel::setDimension,
-                        onBackToNow = {
-                            viewModel.backToCurrentPeriod()
-                            snackbar.show("已回到本期")
-                        },
+                        onBackToNow = { viewModel.backToCurrentPeriod() },
                     )
                 }
             }

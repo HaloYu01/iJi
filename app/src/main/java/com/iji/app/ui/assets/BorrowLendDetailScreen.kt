@@ -36,7 +36,6 @@ import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.ui.add.AddTransactionSheet
 import com.iji.app.ui.components.ContentState
 import com.iji.app.ui.components.IjiTextAction
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.StateView
 import com.iji.app.ui.components.SubPageTopBar
 import com.iji.app.ui.components.formatMoney
@@ -111,7 +110,6 @@ private fun OrderDetailContent(
     val direction = BorrowDirection.entries.firstOrNull { it.matches(tx) }
         ?: if (tx.type == TransactionType.INCOME) BorrowDirection.BORROW else BorrowDirection.LEND
     val category = CategoryCatalog.of(tx.categoryId)
-    val snackbar = LocalSnackbarController.current
     val actions = tx.borrowOrderActions
 
     LazyColumn(
@@ -183,10 +181,7 @@ private fun OrderDetailContent(
                     actions.forEach { action ->
                         IjiTextAction(
                             text = action.label(direction),
-                            onClick = {
-                                onSetState(action.targetState)
-                                snackbar.show(action.doneMessage(direction))
-                            },
+                            onClick = { onSetState(action.targetState) },
                             modifier = Modifier.weight(1f),
                             color = when (action) {
                                 BorrowOrderAction.REVOKE -> TextSecondary

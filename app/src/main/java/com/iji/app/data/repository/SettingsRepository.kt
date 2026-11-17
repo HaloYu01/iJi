@@ -1,6 +1,7 @@
 package com.iji.app.data.repository
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -50,6 +51,8 @@ private val Context.dataStore by preferencesDataStore(
  * 故 AppLockManager 暂不纳入本仓库。
  */
 object SettingsRepository {
+
+    private const val TAG = "SettingsRepository"
 
     /** App 启动即检查更新（默认开，可在偏好设置里关） */
     const val KEY_AUTO_CHECK_UPDATE = "auto_check_update"
@@ -108,6 +111,10 @@ object SettingsRepository {
                 if (value != null) cache[key.name] = value
             }
             warmed = true
+        }.onFailure {
+            // 预热失败也必须置位：否则每个 getter 都 runBlocking 读盘，事件风暴下主线程会 ANR。
+            warmed = true
+            Log.w(TAG, "DataStore 预热失败，改用内存默认值", it)
         }
     }
 

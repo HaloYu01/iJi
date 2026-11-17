@@ -1,9 +1,14 @@
 package com.iji.app.ui.mine
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -31,11 +37,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -50,8 +64,10 @@ import com.iji.app.data.model.Category
 import com.iji.app.data.model.TransactionType
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.data.repository.CategoryIconStore
+import com.iji.app.data.repository.CategoryStore
 import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.IjiDialog
+import com.iji.app.ui.components.IjiDialogActionButton
 import com.iji.app.ui.components.IjiFormCard
 import com.iji.app.ui.components.IjiFormDivider
 import com.iji.app.ui.components.IjiFormSectionTitle
@@ -68,42 +84,30 @@ import com.iji.app.ui.theme.LocalDimens
 import com.iji.app.ui.theme.MiuixPrimary
 import com.iji.app.ui.theme.Radius
 import com.iji.app.ui.theme.TextSecondary
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
-/** 参照实现里 parentId 为 "-1" 表示「无父级 / 一级分类」 */
+/** parentId 为 "-1" 表示无父级（一级分类） */
 private const val NO_PARENT = "-1"
 
-/** 名称长度上限：分类名要出现在记账选择器与统计图例里，太长会被截断 */
 private const val MAX_NAME_LENGTH = 12
 
-/** 图标网格单格最小宽度：按可用宽度自适应列数（手机上通常 4 列） */
 private val ICON_CELL_MIN_WIDTH = 74.dp
 
-/** 新建分类没有兜底色时的中性灰（与 CategoryCatalog.add 的默认色一致） */
 private const val DEFAULT_CATEGORY_COLOR = 0xFF9CA3AF
 
-/**
- * 分类编辑页（新增 / 编辑合一）。
- *
- * 【结构】对齐「添加账户页」（[com.iji.app.ui.assets.AddAccountScreen]）——一页只做三件事：
- * 1. **分类信息卡**：名称（外置字段名 + 字数计数 + 就地错误）+ 账本 / 父分类（卡内只读行）；
- * 2. **图标卡**：当前图标 + 「更换」。图标选择器是独立面板（[IjiDialog] 内 `LazyVerticalGrid`），
- *    不再是"453 个图标铺满整页"——这也是旧版最致命的问题：底部保存按钮被网格顶到 90 屏之后。
- * 3. **底部固定主按钮**：唯一保存入口，键盘弹出随之上浮。
- *
- * 【为什么图标要放进面板】旧版把整个素材库（453 项）内联在表单中间：
- * - 保存按钮要滚到底才找得到；顶栏那个是裸蓝字，和标题同级，不像按钮 → 两个入口都不好用；
- * - 网格用普通 Column 逐行组合 + `loadCategoryIcon` **同步解码**，进页即卡；
- * - 白线条 PNG 画在 25% 透明色圆上，对比度约 1.1:1，整屏糊成一片。
- *
- * 【图标可读性】单元格统一用 [CategoryIconImage]（异步 Coil + **实色**圆底），
- * 名称 10sp 单行；排序固定为「当前图标 → 本类型分类已在用的图标 → 其余」，
- * 因此当前选中的图标恒在第一格，不必滚动寻找。
- *
- * 【行为口径】
- * - 新建：名称留空（不再把素材名 "115网盘" 塞进名称框），默认图标取同类型常用图标；
- * - 编辑：名称可改（出厂分类也一样），图标按 id 存，改名不丢图标；
- * - 有改动时返回（顶栏 / 系统返回）先确认，避免白改一场。
- */
+private val CATEGORY_COLORS = listOf(
+    0xFF3B82F6L, 0xFFFF6B35L, 0xFF10B981L, 0xFF8B5CF6L, 0xFFEF4444L, 0xFF9CA3AFL,
+)
+
+private val HUE_COLORS = (0..6).map { Color(hsvColor(floatArrayOf(it * 60f, 1f, 1f))) }
+
+private fun hsvColor(hsv: FloatArray): Long =
+    java.lang.Integer.toUnsignedLong(android.graphics.Color.HSVToColor(hsv))
+
+/** 分类编辑页（新增 / 编辑合一） */
 @Composable
 fun CategoryEditScreen(
     categoryId: String,
@@ -120,11 +124,8 @@ fun CategoryEditScreen(
     val target: Category? = remember(categoryId, isEdit) {
         if (isEdit) runCatching { CategoryCatalog.of(categoryId) }.getOrNull() else null
     }
-    // 出厂分类只是"来源"标记，同样可改名/删除；这里仅用于给出提示文案
     val builtin = target?.let { CategoryCatalog.isBuiltin(it.id) } == true
 
-    // 同类型分类**已经在用**的图标：既做"常用"前置，也做新建分类的默认图标，
-    // 免得新分类一进来就顶着「115网盘」这种和分类八竿子打不着的素材。
     val usedIcons = remember(context, type) {
         val source = when (type) {
             TransactionType.EXPENSE -> CategoryCatalog.expenses
@@ -144,24 +145,39 @@ fun CategoryEditScreen(
     }
     val initialName = target?.name.orEmpty()
 
+    val initialColor = remember {
+        target?.color
+            ?: parentId.takeIf { it != NO_PARENT }?.let { CategoryCatalog.of(it).color }
+            ?: DEFAULT_CATEGORY_COLOR
+    }
     var selectedIcon by remember { mutableStateOf(initialIcon) }
+    var selectedColor by remember { mutableStateOf(initialColor) }
     var name by remember { mutableStateOf(initialName) }
     var showNameError by remember { mutableStateOf(false) }
     var showIconPicker by remember { mutableStateOf(false) }
+    var showColorPicker by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
+    var savedColors by remember { mutableStateOf(CategoryStore.savedColors(context)) }
+    var hsv by remember { mutableStateOf(floatArrayOf(210f, 0.7f, 0.95f)) }
+    val pickedColor = hsvColor(hsv)
+    val palette = remember(savedColors) { (CATEGORY_COLORS + savedColors).distinct() }
+
+    fun openColorPicker() {
+        hsv = FloatArray(3).also { android.graphics.Color.colorToHSV(selectedColor.toInt(), it) }
+        showColorPicker = true
+    }
 
     val parentName = remember(parentId) {
         if (parentId == NO_PARENT) null else CategoryCatalog.of(parentId).name
     }
-    val accent = Color(target?.color ?: DEFAULT_CATEGORY_COLOR)
+    val accent = Color(selectedColor)
 
     val nameError = when {
         name.isBlank() -> "请填写分类名称"
         name.length > MAX_NAME_LENGTH -> "分类名称最多 $MAX_NAME_LENGTH 个字"
         else -> null
     }
-    // 与回填基线逐字段比较：只改了图标也算有改动
-    val dirty = name != initialName || selectedIcon != initialIcon
+    val dirty = name != initialName || selectedIcon != initialIcon || selectedColor != initialColor
 
     fun requestBack() {
         if (dirty) showDiscardDialog = true else onBack()
@@ -180,30 +196,27 @@ fun CategoryEditScreen(
 
         val current = target
         if (current == null) {
-            // 新建：parentId 为 "-1" 时创建一级分类
             val created = CategoryCatalog.add(
                 context = context,
                 name = newName,
                 type = type,
                 parentId = parentId.takeIf { it != NO_PARENT },
+                color = selectedColor,
             )
             if (created == null) {
                 snackbar.show("保存失败：已存在同名分类")
                 return
             }
-            // 新分类拿到 id 之后才写图标（图标从此按 id 存，改名不会丢）
             CategoryIconStore.setById(context, created.id, selectedIcon)
         } else {
-            // 编辑：id 不变，账单/预算/模板的引用自动跟随新名字
-            if (current.name != newName) {
-                if (!CategoryCatalog.update(context, current.copy(name = newName))) {
+            if (current.name != newName || current.color != selectedColor) {
+                if (!CategoryCatalog.update(context, current.copy(name = newName, color = selectedColor))) {
                     snackbar.show("保存失败：已存在同名分类")
                     return
                 }
             }
             CategoryIconStore.setById(context, current.id, selectedIcon)
         }
-        snackbar.show("保存成功")
         onBack()
     }
 
@@ -249,9 +262,17 @@ fun CategoryEditScreen(
                         onOpenPicker = { showIconPicker = true },
                     )
                 }
+                item(key = "color") {
+                    ColorSection(
+                        colors = palette,
+                        selected = selectedColor,
+                        onSelect = { selectedColor = it },
+                        onOpenPicker = { openColorPicker() },
+                    )
+                }
             }
 
-            // 底部主按钮：全页唯一保存入口（旧版还有一个在网格末尾的按钮，已经被删掉）
+            // 底部主按钮：全页唯一保存入口
             Column(modifier = Modifier.fillMaxWidth()) {
                 IjiFormDivider(startPadding = 0.dp)
                 IjiPrimaryButton(
@@ -280,11 +301,34 @@ fun CategoryEditScreen(
             used = usedIcons,
             selected = selectedIcon,
             accent = accent,
-            // 每次打开都从空搜索开始，避免看到上次留下的过滤结果却以为素材少了
             resetKey = showIconPicker,
             onPick = {
                 selectedIcon = it
                 showIconPicker = false
+            },
+        )
+    }
+
+    IjiDialog(
+        show = showColorPicker,
+        onDismissRequest = { showColorPicker = false },
+        title = "调色盘",
+    ) {
+        ColorPickerContent(
+            color = pickedColor,
+            hsv = hsv,
+            onHsvChange = { hsv = it },
+            onCancel = { showColorPicker = false },
+            onSave = {
+                val picked = hsvColor(hsv)
+                CategoryStore.saveColor(context, picked)
+                savedColors = CategoryStore.savedColors(context)
+                selectedColor = picked
+                showColorPicker = false
+            },
+            onUseOnce = {
+                selectedColor = hsvColor(hsv)
+                showColorPicker = false
             },
         )
     }
@@ -407,12 +451,179 @@ private fun IconSection(
     }
 }
 
-/**
- * 图标选择面板内容：搜索 + 自适应网格。
- *
- * 排序与搜索都只在内存里对 453 个名字做一次过滤（比旧版"边滚边同步解码"便宜得多），
- * 因此不做防抖——输入即刷新，反而更跟手。
- */
+@Composable
+private fun ColorSection(
+    colors: List<Long>,
+    selected: Long,
+    onSelect: (Long) -> Unit,
+    onOpenPicker: () -> Unit,
+) {
+    val shape = RoundedCornerShape(Radius.pill)
+    Column {
+        IjiFormSectionTitle("图标颜色")
+        IjiFormCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                colors.forEachIndexed { index, value ->
+                    val active = value == selected
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .clip(shape)
+                            .background(Color(value))
+                            .border(
+                                2.dp,
+                                if (active) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                                shape,
+                            )
+                            .selectable(
+                                selected = active,
+                                role = Role.RadioButton,
+                                onClick = { onSelect(value) },
+                            )
+                            .semantics { contentDescription = "颜色 ${index + 1}" },
+                    )
+                }
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .clip(shape)
+                        .clickable(onClick = onOpenPicker)
+                        .semantics { contentDescription = "自定义颜色" },
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val radius = size.minDimension / 2f
+                        drawCircle(brush = Brush.sweepGradient(HUE_COLORS), radius = radius)
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                listOf(Color.White, Color.White.copy(alpha = 0f)),
+                                center = center,
+                                radius = radius,
+                            ),
+                            radius = radius,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColorPickerContent(
+    color: Long,
+    hsv: FloatArray,
+    onHsvChange: (FloatArray) -> Unit,
+    onCancel: () -> Unit,
+    onSave: () -> Unit,
+    onUseOnce: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        ColorWheel(hsv = hsv, onHsvChange = onHsvChange)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .background(Color(color)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "#${color.toString(16).takeLast(6).uppercase()}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            IjiDialogActionButton("取消", onCancel, Modifier.weight(1f))
+            IjiDialogActionButton("保存颜色", onSave, Modifier.weight(1f), prominent = true)
+            IjiDialogActionButton("本次使用", onUseOnce, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun ColorWheel(hsv: FloatArray, onHsvChange: (FloatArray) -> Unit) {
+    val latestHsv by rememberUpdatedState(hsv)
+    val hueColor = Color(hsvColor(floatArrayOf(hsv[0], 1f, 1f)))
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .pointerInput(Unit) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val radius = minOf(size.width, size.height) / 2f
+                val ring = 28.dp.toPx()
+                val half = (radius - ring - 8.dp.toPx()) / sqrt(2f)
+                fun update(pos: Offset) {
+                    val dx = pos.x - c.x
+                    val dy = pos.y - c.y
+                    val next = latestHsv.copyOf()
+                    if (sqrt(dx * dx + dy * dy) > radius - ring) {
+                        next[0] = (Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() + 360f) % 360f
+                    } else {
+                        next[1] = ((pos.x - c.x) / (2f * half) + 0.5f).coerceIn(0f, 1f)
+                        next[2] = (0.5f - (pos.y - c.y) / (2f * half)).coerceIn(0f, 1f)
+                    }
+                    onHsvChange(next)
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    update(down.position)
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        update(change.position)
+                    }
+                }
+            },
+    ) {
+        val c = center
+        val radius = size.minDimension / 2f
+        val ring = 28.dp.toPx()
+        drawCircle(
+            brush = Brush.sweepGradient(HUE_COLORS),
+            radius = radius - ring / 2f,
+            center = c,
+            style = Stroke(ring),
+        )
+        val half = (radius - ring - 8.dp.toPx()) / sqrt(2f)
+        val topLeft = Offset(c.x - half, c.y - half)
+        val square = Size(half * 2f, half * 2f)
+        val corner = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+        drawRoundRect(
+            brush = Brush.horizontalGradient(listOf(Color.White, hueColor)),
+            topLeft = topLeft,
+            size = square,
+            cornerRadius = corner,
+        )
+        drawRoundRect(
+            brush = Brush.verticalGradient(listOf(Color.Transparent, Color.Black)),
+            topLeft = topLeft,
+            size = square,
+            cornerRadius = corner,
+        )
+        val svCenter = Offset(c.x - half + hsv[1] * 2f * half, c.y + half - hsv[2] * 2f * half)
+        drawCircle(Color.White, 7.dp.toPx(), svCenter, style = Stroke(2.dp.toPx()))
+        drawCircle(Color.Black, 5.dp.toPx(), svCenter, style = Stroke(1.dp.toPx()))
+        val angle = Math.toRadians(hsv[0].toDouble())
+        val hueRadius = radius - ring / 2f
+        val hueCenter = Offset(
+            c.x + cos(angle).toFloat() * hueRadius,
+            c.y + sin(angle).toFloat() * hueRadius,
+        )
+        drawCircle(Color.White, 9.dp.toPx(), hueCenter, style = Stroke(2.dp.toPx()))
+        drawCircle(Color.Black, 7.dp.toPx(), hueCenter, style = Stroke(1.dp.toPx()))
+    }
+}
+
+/** 图标选择面板：搜索 + 自适应网格 */
 @Composable
 private fun IconPicker(
     all: List<String>,
@@ -558,12 +769,7 @@ private fun FieldLabel(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-/**
- * 图标搜索匹配：素材名包含关键词，或命中日常用语的别名。
- *
- * 素材名多是品牌 / 书面词（「餐饮」「交通」），用户脑子里是「吃饭」「打车」，
- * 所以补一张小别名表；别名命中与名字命中同样处理，不做优先级区分（排序已把常用项前置）。
- */
+/** 图标搜索匹配：素材名或日常用语别名 */
 private val ICON_SEARCH_ALIASES: Map<String, List<String>> = mapOf(
     "餐饮" to listOf("吃饭", "吃", "美食", "外卖", "饭", "餐厅", "夜宵"),
     "午餐" to listOf("正餐", "午饭"),

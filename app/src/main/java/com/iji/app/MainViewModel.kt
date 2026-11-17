@@ -1283,15 +1283,9 @@ class MainViewModel : ViewModel() {
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     // ── 预算管理 ──
-    private val _monthlyBudgetCents = MutableStateFlow(300000L) // 默认 3000 元/月
+    private val _monthlyBudgetCents = MutableStateFlow(0L)
     val monthlyBudgetCents: StateFlow<Long> = _monthlyBudgetCents
 
-    /**
-     * 设置月度总预算。
-     *
-     * 除更新内存值外，同步持久化为「全分类 + 自然月」的 Budget —— 旧实现只存在内存里、
-     * 重启即丢，预算超支提醒和每日巡检也就没有可检查的对象。
-     */
     fun setMonthlyBudget(cents: Long) {
         _monthlyBudgetCents.value = cents
         viewModelScope.launch {
@@ -1309,12 +1303,10 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    // 启动时回读已持久化的月度预算。
-    // 放在 _monthlyBudgetCents 之后声明：init 与属性按声明顺序执行，放前面会读到未初始化的字段。
     init {
         viewModelScope.launch {
             runCatching {
-                budgetRepository.findTotalMonthlyBudget()?.amountCents
+                budgetRepository.findTotalMonthlyBudget()?.takeIf { it.enabled }?.amountCents
             }.getOrNull()?.let { saved ->
                 if (saved > 0L) _monthlyBudgetCents.value = saved
             }

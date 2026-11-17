@@ -1,6 +1,7 @@
 # i记（iji-android）交接文档
 
-> **单一权威文档 · 最后更新 2026-11-12**
+> **单一权威文档 · 最后更新 2026-11-13**
+> 本轮（11-13，v1.1.0）：**minSdk 33→30（兼容 Android 11+）**、移除死依赖 miuix-blur、修复全部 NewApi；实况通知 <35 自动回落普通通知为既有逻辑，本轮验证确认。见 **§8.8**。
 > 本轮（11-12）：加密备份改成「先 gzip 再 AES」（新旧格式都认）、文件导入按字节识别、网盘按 7 份保留、识屏/分享临时图用完即删。真机与模拟器验证结果见 **§8.7**，剩余待办见 **§9.1**。
 > 原 8 份 Markdown（本文 + README + 6 份专题/历史文档）已收敛为「本文 + 一页 README」；重复段落删除，历史过程只保留结论与理由。
 > 工程根 `Y:\iji-android`｜应用身份 `com.haloyu.iji`（2026-11-13 起；namespace 代码包仍是 `com.iji.app`）｜改动全部在工作区、**未提交 git**。
@@ -94,13 +95,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run_unit_tests.ps1
 | 项 | 版本 |
 |---|---|
 | AGP / Gradle / Kotlin | 9.3.0 / 9.6.0 / 2.4.20（**Kotlin 由 AGP 内置**，见 §7.1） |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 33 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / 30（2026-11-13 从 33 降级，兼容 Android 11+） |
 | UI | Compose BOM 2026.08.00 + Material3 + **Miuix 0.9.4**（`miuix-ui` / `miuix-icons` / `miuix-blur` / `miuix-squircle`） |
 | 持久化 | Room 2.8.5（KSP 2.3.12），数据库 **v24**；偏好 DataStore 1.1.4 |
 | 图片 / OCR | Coil 3.3.0；ML Kit 中文 OCR 16.0.1（本地兜底） |
 | 系统能力 | WorkManager 2.10.0、Shizuku 13.1.5、hiddenapibypass 4.3、无障碍服务 |
 | 导航 | navigation-compose 2.8.5 |
-| 版本号 | versionName `1.0.0` / versionCode `4`（与更新日志首条对应） |
+| 版本号 | versionName `1.0.1` / versionCode `5`（与更新日志首条对应） |
 
 ### 3.2 架构
 
@@ -228,7 +229,7 @@ app/src/main/java/com/iji/app/
 
 | 页面 | 路由 | 内容 |
 |---|---|---|
-| 自动记账 | `auto_bookkeeping` | **四组单页，一件事只出现一处**：状态与总闸（逻辑总闸 / 权限就绪度→权限检验）、触发器（支付通知 / 截图授权方式下拉 / 音量键开关＝绑定与解绑 / 立即识屏）、一键授权（一键加磁贴 / 一键开或关无障碍）、识别与落账（**悬浮窗确认开关置于结果样式上方：关＝样式自动切「通知」，选「通知」＝关开关** / 结果样式下拉 / 落账账本 / 去重窗口 / 倒计时 / AI 记账与截屏批量导入两个跳转）。2026-11-11 去重：删检查并开启权限按钮、3 步向导入口、识屏与授权跳转、独立绑定音量键行，并删除 `screen_capture` / `auto_guide` 两个冗余子页。**不摆记录、提示词、备注格式**，备注格式在「提示词与规则」页 |
+| 自动记账 | `auto_bookkeeping` | **按能力链路分类，不按设置类型分类**（2026-11-14 三次重构）：配置状态卡（无障碍三态 `OFF/NOT_CONNECTED/READY` + Shizuku 五态逐态文案与动作、**全页唯一「下一步」主按钮**、关系说明随模式变化、权限检验 / 使用说明链接；**全自动模式下隐藏 Shizuku 行**——全自动根本用不到它）→ **最顶部的总闸卡**（「自动记账总闸」开关，位于「记账方式」之上——它是通知记账与全自动记账的共同开关，不属于任何单一模式，也不再塞在支付通知卡里）→ **「记账方式」下拉卡**（`IjiSettingsDropdownRow`，全自动 / 半自动，选中即生效，行副标题一句话讲清该模式在什么时候用；键 `capture_workflow`，默认半自动。用户先在分段切换与下拉之间对比，最终定下拉——两项名称不自解释，下拉能带一句说明）→ 配置状态卡只在**半自动分支**里出现（全自动分支不显示它，无障碍状态收进 hero 卡，Shizuku 与全自动无关）→ **`AnimatedContent` 分支内容**（切换时新卡片自下而上推入、旧卡片向上推出，260ms，判定用 targetState 防退场内容被新状态改写）：半自动 = 截屏来源下拉 / 控制中心磁贴 / 音量键开关＝绑定解绑 / 立即识屏；全自动 = **`AutoRecordSection.kt` 整套新组件，不复用半自动的卡片 / 设置行 / 按钮**——`AutoRecordHeroCard`（状态胶囊只表达自身状态：运行中 / 待无障碍 / 未选平台 / 总闸已关；大数字在未运行时改说「个平台已选」、不谎称在监听；提示行只写当前唯一拦路原因——总闸关说总闸、否则说无障碍、就绪才说能力本身；最近一次结果；唯一修复按钮）、`AutoPlatformChipGrid`（8 个平台 chip 两行排完，点一下切换监听，键 `auto_capture_trigger_apps`）、`AutoRecordRecentCard`（最近 6 条识别记录，证明「它真的在跑」）；**不出现截屏来源 / 磁贴 / 音量键**（全自动不截屏）→ 支付通知自动记账卡（只留通知识别规则链接；总闸已提到页面顶部，卡内不重复）→ 高级设置（默认收起：关闭无障碍服务、**悬浮窗确认开关置于结果样式上方：关＝样式自动切「通知」，选「通知」＝关开关** / 结果样式 / 落账账本 / 去重 / 倒计时仅半自动）。**全自动实现（节点识别，不截屏 / 不 OCR，与半自动完全解耦）**：新包 `com.iji.app.autorecord`——`AutoNode`（把 `rootInActiveWindow` 按视觉顺序拍平成文本节点 + 匹配原语）、`AutoValues`（金额 / 时间 / 备注清洗）、`AutoPlatforms`（8 个平台的规则表：微信 6 条 / 支付宝 6 条 / 云闪付 3 条 / 京东 3 条 / 美团 4 条 / 美团外卖 1 条 / 拼多多 2 条 / 抖音 3 条，按「页面成立条件 + 字段取值关系」写，前 8 家来自钱迹 4.5.5 无障碍研究资料的行为规格、独立实现）、`AutoRecordStore`（120s 去重 + 最近 6 条记录 + 悬浮窗确认 / 通知兜底）。服务端 `PaymentNotifyAccessibilityService.maybeAutoCapture`：窗口状态 / 内容变化事件 → 平台页面判定（微信排除 `LauncherUI`）→ 防抖后进行节点解析（微信 150ms、其余 300ms、支付宝 160ms 只认支付成功页 + 450ms 全量）→ 命中则走确认；到点复核前台包名与 windowId，识别不到静默跳过。**先确认后入账**不变。**页面级预过滤**：微信首页 / 聊天列表（`com.tencent.mm.ui.LauncherUI`）直接跳过，省掉最常被切到场景的无效截屏（参考钱迹 4.5.5 无障碍研究资料 `ca/i` 的判定：微信排除 LauncherUI、支付宝放行全页面，其余交给识别结果兜底）。**子页面按归属挂在各卡底部「相关设置」里，一件事只出现一处**；视觉按 Nexio 设置页规范：20dp 连续圆角、卡内不画分隔线、8dp 状态点、组间 12dp、次要链接中性色。2026-11-11 去重：删 3 步向导入口、识屏与授权跳转及 `screen_capture` / `auto_guide` 两个冗余子页。**不摆记录、提示词、备注格式**，备注格式在「提示词与规则」页 |
 | 智能识别 | `smart_capture` | 原自动记账页的**手动**识别区（一句话 / 拍照 / 相册 / 语音 → 结果卡快存或详细编辑 → 最近解析，带空态与重试）；快存遵循落账账本与备注模板 |
 | 通知识别规则 | `notification_rules` | 无障碍与总闸状态 + 白/黑名单多行编辑（即时写盘，无保存按钮）+ 支持来源清单 |
 | 记账偏好 | ~~`bookkeeping_prefs`~~ | **已删除**，内容上提到自动记账首页 |
@@ -329,7 +330,12 @@ app/src/main/java/com/iji/app/
 | D3 应用锁 | PIN 4 位校验；连错 5 次冷却 30s，计数与截止时刻写加密偏好；冷启动才锁 |
 | D4 触控与无障碍 | 12 处图标点击区兜到 48dp；装饰性图标 `contentDescription = null` 是刻意（同行文字已承载语义） |
 | D5 反馈 | ~60 处 Toast 改 Snackbar（指纹解锁 2 处保留，因 LockScreen 上 SnackbarHost 尚未渲染）；状态不只靠颜色 |
-| 不做 | PullToRefresh（本地库无远端，转了也没新数据）、统计再分组（待信息架构决策） |
+| 保活与恢复（2026-11-15） | 全自动加**前台服务** `AutoRecordStatusService`（`foregroundServiceType=specialUse`，常驻静默通知「运行中 / 已被系统关闭」，点通知进自动记账页）+ **1px 无障碍覆盖层**（`TYPE_ACCESSIBILITY_OVERLAY`，GKD 同款辅助手段）；无障碍连接时启动、断开时**不停服务只改通知**，关总闸或切半自动立即停止；`a11y_last_connected_at` 记连接时间，被清理后 hero 明确写「无障碍被系统清理关闭（清后台导致）」并提供一键恢复——区分「从没开过」与「被系统杀了」；「后台保护」卡检测省电策略与通知权限并给跳转（后台锁定只能文字引导）；平台 chip 数据源改为 `AutoListenPrefs`（键 `auto_listen_packages`，旧键 `auto_capture_trigger_apps` 一次性迁移），与半自动偏好彻底分开，chip 增加「常用 / 全部」快捷与「已选 N / 8」计数、选中态描边 |
+| 界面精简（2026-11-15） | 按「一屏一个动作、用视觉不用说明书」重排：总闸与方式合并成一张卡；全自动的**状态 + 平台 chip 合并为一张卡**（大数字与状态胶囊一行、8 个 chip 跟在其下、需要授权时底部出现全宽按钮，按钮文案按「恢复 / 开启」区分是否被系统清理过——归因由按钮承担，不再另写原因行）；运行时卡内除状态与 chip 外**没有任何说明文字**；chip 去掉「已监听 / 未监听」小字与「常用 / 清空」快捷，改**实心填充**表达选中（亮 = 监听）；最近识别空态整块不渲染、最多 3 条；底部按钮常驻并承担开关语义（运行时「关闭无障碍」用次要样式，未就绪时「开启 / 恢复」用主色；无 Shizuku 时关闭动作只能跳到系统设置，有 Shizuku 才直接写回）；后台保护、半自动的截屏来源 / 磁贴 / 音量键全部收进「高级设置」；半自动首屏只留状态卡 + 一个「识屏」大按钮；状态卡的授权说明压到最短（「已连接」「未安装 · 可选」），能力不再解释；`RouteCard` 无链接时不再渲染孤立的「相关设置」空行 |
+| 事件调度对齐钱迹（2026-11-15） | 按钱迹 `E()`/`D()`/`C()` 重写全自动的事件调度：①**合并桶** `ParseSlot`（key=`windowId_pass`），同窗口同通道连续事件不重复排队，只更新根节点与计数；②**needAgain 重跑**——解析进行中新事件只置标记，本轮结束自动再跑一轮（取代原来「防抖只跑一次 + 400ms 兜底补抓」，这是漏单主因）；③节点收集留主线程、纯数据解析进单线程池 `auto-bill-parse`，与钱迹串行执行一致；④取根节点同 `C()`：同 windowId 优先 `rootInActiveWindow`，否则向上爬到顶；事件源为空直接返回；⑤`onUnbind`/`onDestroy` 清空桶与延迟任务，线程池 `RejectedExecutionException` 静默；⑥状态判定改 `AccessibilityManager.getEnabledAccessibilityServiceList`（钱迹 `RUNNING` 的判法），不再只依赖进程内静态标记。**未做**：通知上的「一键恢复」动作（钱迹用 `PendingIntent → BroadcastReceiver`）与 `WRITE_SECURE_SETTINGS` 自愈（需 `adb shell pm grant`，见 `da/k.java`） |
+| 保活对齐钱迹（2026-11-15） | 补齐钱迹那套「被清理后能自己修回来」：①新增 `AutoRecoverReceiver`（`com.iji.app.action.RECOVER_A11Y`），断开时通知出现「恢复」动作，点一下按 Shizuku → `WRITE_SECURE_SETTINGS` → 跳系统设置的顺序自愈，不依赖无障碍服务进程；②新增 `A11ySelfHeal`（对齐钱迹 `da/k.java`）：有 `WRITE_SECURE_SETTINGS` 时直写 `enabled_accessibility_services`（只追加本服务）+ `accessibility_enabled=1`，再轮询 `isRunning` 最多 2.5s 确认真的绑上；③清单声明该权限，高级设置加「高级恢复」行（未授权时点击复制 `adb shell pm grant <包名> android.permission.WRITE_SECURE_SETTINGS`）；④实测链路：force-stop 清空无障碍 → 通知「已关闭，点此恢复」→ 点恢复 → `settings` 写回 → 通知自动刷成「运行中」。**不学**：`android:persistent="true"`（三方应用无效）、伪装系统无障碍类名（灰色手段）；钱迹也没有 BOOT_COMPLETED / 定时拉起，同样不做 |
+| 修复：切页面不识别（2026-11-15） | 对齐钱迹时照搬了 `event.source == null → return`，但系统对 `TYPE_WINDOW_CONTENT_CHANGED` 多数不填 source，导致页面变化事件被整批丢弃 → 改为 source 为空时回落 `rootInActiveWindow`；**不要**再照搬这一条。同时延迟 150–450ms 后旧 `NodeInfo` 会失效 → `runParse` 改为优先取实时根（同 windowId 才用，否则退回事件引用）；`windowId == -1` 时不按跨窗口截断（否则只拿到子节点）；`scheduleParse` 增加 `schedule` 诊断行（平台 / win / pass / 延迟），真机异常时先看这行判断是「没进调度」还是「解析未命中」 |
+| 全自动记账根因重构（2026-11-15） | 连续多轮的「识别不到 / 不弹窗」不是规则问题，是四个结构性缺陷，逐个实证后修复：①`AutoDiag` 用全项目共享的 `SimpleDateFormat`，解析线程与主线程并发 `format()` 使其内部 Calendar 状态错乱并抛异常，`parseNodes` 第一行 `log()` 即中断且被线程池静默吞掉（表现：有 `schedule`、其余日志全无）→ 换线程安全的 `DateTimeFormatter`，且 `log()` 整体 `runCatching`，日志永不影响记账；②取根用 `rootInActiveWindow`，真机上它常是系统通知栏（日志 `[com.android.systemui/9]`），微信真正的 74 个节点在另一个窗口 → 新增 `eventRoot()` 锚定**事件所属窗口**（source 沿 parent 爬山 → 按 windowId 查 `windows` → 同 id 的 active，否则放弃），与钱迹 `C()` 等价，不再按包名猜窗口；③微信 `MMWebViewUI` 对**第三方无障碍服务**返回空树（flags 全开 0x5b 仍 `child=0`，而系统 `uiautomator dump` 能读到 74 节点）→ 新增 `ShizukuNodeReader`，用 shell 身份执行一条复合命令 dump + 解析成 `AutoNode`，规则层完全复用、无双份逻辑；④投递协程挂在服务实例的 `autoScope` 上，`onDestroy` 取消后旧实例的投递全部静默丢失（日志 `scopeActive=false`）→ 改为 `AutoRecordStore.deliverDetected()`，投递跑在**应用级作用域**，与服务生命周期解耦。实测微信账单页端到端：`schedule → empty[com.tencent.mm/0] → shizuku dump=26 → hit amount=80 out=零钱 → 查重 SUSPECT → asset 微信 → shown=true`，悬浮窗显示 -0.80 / 微信 / 「1268自助打印」 |\n| 8 平台逐个体检（2026-11-15） | 除已实测的微信/支付宝外，逐个核对了云闪付/京东/美团/美团外卖/拼多多/抖音的规则与链路，修掉 6 处会直接导致「不识别」或「记错」的缺陷：①**默认只监听 3 家**（微信/支付宝/云闪付），京东/美团/拼多多/抖音**从入口就被 return**，规则再好也不触发 → 默认改为全部平台 + 旧种子值迁移；②**`uiautomator dump` 无超时**，真机在京东首页跑出 11.3 秒并返回 0，单线程解析池被堵死 → 命令加 `timeout 5`、去掉重试，并给 `AutoPlatform` 加 `shizukuFallback` 开关，**只对微信启用**（其余平台无障碍本来就能读，不该付这个代价）；③拼多多 `PddOrderDetail` 在订单列表页会误命中（「下单时间+交易成功」列表里也有），且 `firstAmount` 兜底会取到列表里另一笔的钱 → required 加 `contains("实付")`、去掉兜底；④美团充电宝用**整句 exact**（`充电宝已归还，感谢使用`）太脆 → 改 `contains`；⑤美团团购状态只认「已消费」→ 扩成 已消费/已完成/待评价；⑥云闪付状态与标签只认单一文案 → 扩成 交易状态/交易时间/支付成功 等 anyOf。**注意抖音不在钱迹 55 个页面里**（钱迹只覆盖微信/支付宝/拼多多/云闪付/淘宝/京东/美团/美团外卖），其规则是本项目自写，`转账` 的进/出方向无外部依据，暂按收入处理并在注释标注待真机确认。实测结论：微信 `dump=28 cost=3009ms → hit amount=1060 out=零钱 → shown=true`，悬浮窗显示 -10.60 / 微信 / 「江苏师范大学三食堂-6号窗口」；京东无障碍可读（首页 154 节点，`miss` 属预期） |\n| 最近识别状态同步（2026-11-15） | 用户确认账单后，「最近识别」仍显示「待确认」。根因不是回调没接（`BillOverlay.onSaved` 链路是通的），而是**分隔符冲突**：指纹 `dedupKey` 本身就是 `|` 连接的（`包名|页面|类型|时间|金额`），而 `Entry` 落盘也用 `|` 当字段分隔符，写入后指纹被拆成 5 段，`parts[6]` 只能拿到包名 → `markConfirmed` 永远匹配不上（真机日志 `[confirm] 没有匹配的待确认记录`）→ 修法：落盘分隔符改 `\u0001`，新增 `parseEntryLine()` 统一解析，旧数据（`|` 格式、无指纹段）按旧规则读、指纹视为空；同时补两处防御：①`mark` 遇到同指纹已「已确认」的记录直接跳过，否则用户确认后停留在页面上，8s 展示去重一过会再次投递把「已确认」覆盖回「待确认」；②`mark` 按指纹去重（同笔只留一条），并清理旧版本无指纹的同平台同金额待确认残留，否则每次重新识别都会叠加一条。实测：微信 -41.70 保存后日志 `[confirm] 已标记为已确认`，回 App 列表显示「15:30 微信 已确认 · 微信 -¥41.70」，页面停留 16 秒未回退 |\n| 不做 | PullToRefresh（本地库无远端，转了也没新数据）、统计再分组（待信息架构决策） |
 
 ### 8.6 自动记账重做（2026-11-10）
 
@@ -337,7 +343,7 @@ app/src/main/java/com/iji/app/
 
 | 项 | 结果 |
 |---|---|
-| 信息架构 | 旧页 624 行塞「手动记账 + 最近解析 + 三个只读跳转」→ 推翻为分组单页（状态与总闸 / 触发器 / 一键授权 / 识别与落账）；手动区迁到 `smart_capture`；`BookkeepingPrefsScreen` 删除；记录与提示词跳转按用户要求移除；2026-11-11 再按「一件事只出现在一处」删掉重复入口、合并音量键开关、删除 `ScreenCaptureSettingsScreen` 与 `AutoGuideScreen` 两个冗余子页 |
+| 信息架构 | 旧页 624 行塞「手动记账 + 最近解析 + 三个只读跳转」→ 推翻为分组单页（状态与总闸 / 触发器 / 一键授权 / 识别与落账）；手动区迁到 `smart_capture`；`BookkeepingPrefsScreen` 删除；记录与提示词跳转按用户要求移除；2026-11-11 再按「一件事只出现在一处」删掉重复入口、合并音量键开关、删除 `ScreenCaptureSettingsScreen` 与 `AutoGuideScreen` 两个冗余子页；2026-11-14 因「新用户不知从何下手、分不清 Shizuku 与无障碍」两次重构：先加页内上手卡，用户仍觉乱后**推翻「按设置类型分组」，改成按两条能力链路分组** —— 状态卡同时展示无障碍三态与 Shizuku 五态（`ShizukuState`，含「已安装但没运行 / 正在运行未授权」等提示与对应动作），按状态算唯一主按钮（去开启无障碍 / 重开设置 / 切回自动截屏 / 就绪则隐藏），把总闸、触发方式、子页面入口分别归到「支付通知自动记账」「截图识屏记账」两张能力卡，其余收进默认折叠的高级设置；同日第三次重构按用户要求**把识屏拆成全自动 / 半自动两种工作流**（参考用户提供的两份竞品截图：顶部模式选择 + 极简大卡）：新增 `capture_workflow` 与 `auto_capture_trigger_apps` 两个偏好键，**模式选择放页面最顶部**——先做成分段切换，用户对比后定为**下拉**（两项名称不自解释，下拉能带说明），分支内容用 `AnimatedContent` 做「向上推动」切换且按模式重写为极简分支（全自动只剩「上次自动识别」+ 监听应用 + 识别延迟），全自动借无障碍窗口切换事件在 `maybeAutoCapture` 触发（silent 识屏：无进度岛、无账单不打扰）；并按钱迹 4.5.5 无障碍研究资料（`qianji-yike-port` research release）补了**微信 LauncherUI 页面预过滤**与**最近一次自动识别结果**（对齐其「自动记账记录」的可观测性思路，只取最近一条不建日志页）；**同日第四次重构**：全自动改为**无障碍节点识别（不截屏、不 OCR）**——新增 `com.iji.app.autorecord`（节点拍平 / 匹配原语 / 金额时间清洗 / 8 平台规则 / 120s 去重与最近记录），`maybeAutoCapture` 按平台延迟抓节点树解析，UI 全自动部分用 `AutoRecordSection.kt` 全新组件重写并与半自动彻底解耦（`ScreenCaptureFlow` 删掉 silent 专用分支），另补 `AutoBillEngineTest` 纯 JVM 用例（本机 JDK 24 下测试进程起不来，既有用例同样失败，属环境问题）；**同时改了无障碍配置**：`canRetrieveWindowContent` 由 false 改为 true、事件类型加 `typeWindowContentChanged`，并重写 `accessibility_payment_desc` 文案如实说明「会读支付类应用账单页文字」——这是节点识别的硬前提，不放开则节点树恒为空；**同日第五次大改（全自动对齐钱迹的成熟机制，与半自动彻底分家）**：①新增 `AutoAssetMatcher` 6 级账户匹配（用户映射 110 / 精确 100 / 银行卡尾号 80 / Dice+LCS 相似度 70 / 场景词典 65 / 平台默认 60，匹配不到返回 null 交确认卡）+ `AutoAssetSource`（资产与映射读写）+ 页面「账户匹配」卡（未匹配原文一键指定，落成 110 级映射）+ 最近识别显示账户；②修正微信 `afterSkip("支付方式", 1)` 跳段 bug（此前会取到「支付时间」的值）；③未命中 400ms 补抓一次（页面二次渲染），去重升级为「内存 120s + 持久化 60s + 同日同额疑似」三层 + 三档策略（拦掉 / 标注 / 不检测，键 `auto_bill_dup_policy`）；④新增 `AutoText` 清洗引擎与优惠归集（16 个券键 → `discountCents`，并给 `BillDraft` 补字段、落库）；⑤新增 `AutoExtraRules` 32 条补充规则（红包收发 / 商家转账 / 待收款 / 提现详情 / 余额充值 / 转出转入 / 余利宝 3 条 / 云闪付卡号详情 / 爱回收 / 京东 Web 与 WalletV2 / 美团 6 条 / 外卖支付成功 / 先用后付 / 抖音转账 2 条）与平台级黑名单（拦支付密码页），总规则 60 条；⑥新增 `AutoDiag`（滚动日志 80KB + 未识别节点 dump 30s 限频，落 `filesDir/diag/auto-bill.log`）；不新增页面 / 路由 |
 | 选择器口径 | 新增 `IjiSettingsDropdownRow`：≤5 项走 `LiquidGlassDropdownMenu`（须挂 `LiquidGlassDropdownOverlayHost` popup 层），>5 自动降级 `WheelOptionDialog`；布尔量 Switch、自由文本就地编辑。替换旧识屏页 chips，并把所有选择项集中到自动记账首页（一件事只出现在一个分组） |
 | 逻辑总闸 | `AutoBookkeepingPrefs.masterEnabled`，`PaymentNotifyAccessibilityService` 在通知分支读取；系统无障碍授权本身不改 |
 | 悬浮窗确认 | `CapturePreferences.overlayConfirmEnabled` 与系统权限解耦，**能开就能关**；关掉后识屏结果回落草稿 + 通知，不入账。2026-11-11 起与 `overlayStyle` **双向联动**：开关移到「识别结果样式」上方，关＝样式写为 `OVERLAY_ISLAND`（通知），开回来时若仍是通知则回 `OVERLAY_COMPACT`；下拉选「通知」＝关开关，选卡片样式＝开开关。两处不再出现互相矛盾的状态 |
@@ -367,6 +373,19 @@ app/src/main/java/com/iji/app/
 - 单测：`BackupPayloadTest`（压缩往返 / gzip 魔数 / 版本 1 透传 / 未知版本拒绝 / 空载荷）、`BackupImportBytesTest`（明文原样、BOM 不误判、版本 1+2 都认、残缺文件不算密文）。
 
 **改动文件**：新增 `backup/BackupPayload.kt`、`ai/TempImages.kt`；改 `backup/BackupCipher.kt`、`BackupManager.kt`、`CloudBackupManager.kt`、`WebDavClient.kt`、`MainActivity.kt`、`ui/mine/BackupSettingsScreen.kt`、`CloudBackupScreen.kt`、`SmartCaptureScreen.kt`、`ScreenshotImportScreen.kt`；测试新增 `BackupPayloadTest.kt`、`BackupImportBytesTest.kt`（另修了 `AiSummaryPayloadTest` 一个自相矛盾的旧用例：`prev=0` 却断言存在 `expenseChangePct`）。
+
+### 8.8 minSdk 降级到 30 与 v1.0.1（2026-11-13）
+
+| 项 | 结论 |
+|---|---|
+| minSdk | 33 → **30**（Android 11+）。targetSdk 保持 36 不变 |
+| 通知回落 | **既有逻辑，未改动**：实况参数只在 `SDK_INT ≥ 35` 附加，`manager.notify` 无条件执行——低版本/无 promoted 权限自动发普通通知；超级岛路径本就有「非 MIUI 回落原生」分支 |
+| miuix-blur | **移除**（`app/build.gradle.kts` + `libs.versions.toml`）：全工程零代码引用的死依赖，却是唯一声明 minSdk 33 的依赖、直接卡死 manifest 合并。玻璃效果实际走源码内 vendored 的 `com.kyant.backdrop` |
+| NewApi 修复口径 | `isRuntimeShaderSupported()`（`Class.forName` 反射判别，语义 = SDK ≥ 33）标 `@ChecksSdkIntAtLeast(TIRAMISU)`；EdgeLightShaderHelper 的 `getOrCreate`/`setRuntimeShader`/`toShaderBrush`、kyant 的 `obtainRuntimeShader`（接口+实现+scope 覆写）标 `@RequiresApi(33)`；**GlowPainter 用类级 `@Suppress("NewApi")`**——它自降级（shader <33 恒 null、方法全部早退），层层标注会污染 4 个下游文件 |
+| 真守卫（非仅标注） | `LiquidBottomTabs` 底栏折射块 `chromeLens` → `chromeLens && isRuntimeShaderSupported()`：API 30 直调 `obtainRuntimeShader` 会 `NoClassDefFoundError`，这是唯一的真崩溃点；`feedRefraction` 因 shader 为 null 自然 no-op。`addTile()` <33 如实提示手动加磁贴（`requestAddTileService` 是 33 的 API），`getSystemService` 改类字面量顺带消 WrongConstant |
+| API 30 视觉预期 | blur/vibrancy 有 `isRenderEffectSupported` 守卫会静默 no-op：玻璃呈无模糊样、实况/超级岛回落普通通知。**未在 API 30 真机/模拟器走查**，接手方优先补 |
+| 验证 | `assembleDebug` / `assembleRelease` ✓、256 单测 ✓、**`lintDebug` 0 error** ✓、release badging = `com.haloyu.iji` v5 1.0.1、签名指纹不变 ✓ |
+| 历史 lint 清零 | 上一版遗留的 10 个 error 全部修掉：3×notify 收口为 `postSafely`（权限检查+唯一豁免点）、TileService 加 `StartActivityAndCollapseDeprecated` 豁免（PendingIntent 重载是 34+）、`topTabIndex` 提取并豁免 RestrictedApi（公开 API 无整栈能力）、时间格式改读 `LocalConfiguration.current.locales`、AboutScreen 应用名改 `stringResource` / 图标提取 `appIconBitmap`、底栏容器 BoxWithConstraints→Box、预览 VM 改 `viewModel {}` 工厂 |
 
 ## 9. 待办与已知限制
 

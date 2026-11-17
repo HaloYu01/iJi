@@ -167,8 +167,7 @@ fun PromptRuleCenterScreen(
         if (!moved) return
         // 落盘后同步刷新 rules（缓存已更新，同步读即可），LaunchedEffect 会把 order 对齐
         scope.launch {
-            val ok = withContext(Dispatchers.IO) { LocalRuleStore.reorder(context, order.map { it.id }) }
-            snackbar.show(if (ok) "顺序已保存：并列命中时排前的优先" else "顺序没有变化")
+            withContext(Dispatchers.IO) { LocalRuleStore.reorder(context, order.map { it.id }) }
             reload()
         }
     }
@@ -185,7 +184,7 @@ fun PromptRuleCenterScreen(
                     } ?: error("无法写入文件")
                 }.isSuccess
             }
-            snackbar.show(if (ok) "规则已导出" else "导出失败：无法写入文件")
+            if (!ok) snackbar.show("导出失败：无法写入文件")
         }
     }
 
@@ -389,9 +388,8 @@ fun PromptRuleCenterScreen(
         confirmText = "恢复",
         onConfirm = {
             showRestore = false
-            val ok = LocalRuleStore.restoreBuiltins(context)
+            LocalRuleStore.restoreBuiltins(context)
             reload()
-            snackbar.show(if (ok) "已补回内置规则" else "内置规则都在，无需恢复")
         },
     )
 
@@ -407,7 +405,7 @@ fun PromptRuleCenterScreen(
             pendingImport = null
             val count = raw?.let { LocalRuleStore.importJson(context, it) } ?: -1
             reload()
-            snackbar.show(if (count >= 0) "已导入 $count 条规则" else "导入失败：文件格式不对")
+            if (count < 0) snackbar.show("导入失败：文件格式不对")
         },
     )
 }

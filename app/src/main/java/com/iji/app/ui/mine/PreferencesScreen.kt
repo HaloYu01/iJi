@@ -148,7 +148,7 @@ fun PreferencesScreen(
                     testMode = true,
                 )
             }
-            snackbar.show(if (result.sent) "已发送：${result.detail}" else "发送失败：${result.detail}")
+            if (!result.sent) snackbar.show("发送失败：${result.detail}")
         }
     }
 

@@ -4,11 +4,20 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +65,8 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.iji.app.accessibility.CapturePreferences
+import com.iji.app.accessibility.PaymentNotifyAccessibilityService
 import com.iji.app.ai.BillDraft
 import com.iji.app.data.repository.CategoryCatalog
 import com.iji.app.data.repository.QuickBillWriter
@@ -66,7 +77,7 @@ import kotlinx.coroutines.launch
 
 /**
  * 识屏结果悬浮窗：在其他应用之上直接确认账单（`TYPE_APPLICATION_OVERLAY`）。
- * 详细 / 简洁两种排版由 [OverlayCard] 装入 [OverlayShell]，样式在「设置 → 识屏记账」切换。
+ * 详细 / 简洁两种排版由 [OverlayContentHost] 统一装入 [OverlayShell]，样式在「设置 → 识屏记账」切换。
  *
  * 关键约束：默认 `FLAG_NOT_FOCUSABLE` 时 TextField 拿不到输入法，行内编辑文本时由
  * [setWindowFocusable] 临时切成可聚焦、收起后立刻切回——不开对话框 / 新窗口。
@@ -75,10 +86,20 @@ import kotlinx.coroutines.launch
 object BillOverlay {
 
     private const val TAG = "BillOverlay"
+    private const val LOADING_TIMEOUT_MS = 15_000L
 
     private var view: ComposeView? = null
     private var owner: OverlayOwner? = null
     private var params: WindowManager.LayoutParams? = null
+    /** 上次使用的窗口类型：应用悬浮窗与无障碍悬浮窗切换时要重建 view（宿主 context 不同） */
+    private var lastWindowType: Int = 0
+    private var viewHost: Context? = null
+    private var attached = false
+    private var overlayContent by mutableStateOf<OverlayContent?>(null)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val loadingTimeout = Runnable {
+        if (overlayContent == OverlayContent.Loading) dismiss()
+    }
 
     fun canShow(context: Context): Boolean = Settings.canDrawOverlays(context)
 
@@ -103,46 +124,95 @@ object BillOverlay {
         drafts: List<BillDraft>,
         ledgerId: String,
         detailed: Boolean,
+        /** 卡片里真的写库成功（笔数 > 0）后回调；全自动记账用它把「最近识别」标成已确认 */
+        onSaved: (() -> Unit)? = null,
     ): Boolean {
         if (drafts.isEmpty()) return false
-        if (!canShow(context)) {
-            Log.i(TAG, "没有悬浮窗权限，跳过悬浮窗")
+        return present(
+            context,
+            OverlayContent.Bill(
+                drafts = drafts,
+                ledgerId = ledgerId,
+                detailed = detailed,
+                onSaved = onSaved,
+            ),
+        )
+    }
+
+    /** 识别等待卡与结果卡复用同一窗口；已有结果时不打断用户确认。 */
+    fun showLoading(context: Context): Boolean {
+        if (!CapturePreferences.overlayConfirmEnabled(context) ||
+            CapturePreferences.overlayStyle(context) == CapturePreferences.OVERLAY_ISLAND
+        ) {
             return false
         }
-        dismiss()
+        if (attached && overlayContent is OverlayContent.Bill) return false
+        if (attached && overlayContent == OverlayContent.Loading) return true
+        val shown = present(context, OverlayContent.Loading)
+        if (shown) {
+            mainHandler.removeCallbacks(loadingTimeout)
+            mainHandler.postDelayed(loadingTimeout, LOADING_TIMEOUT_MS)
+        }
+        return shown
+    }
 
+    /** 只收等待卡；结果已经展开时绝不能把它一并关掉。 */
+    fun dismissLoading() {
+        if (overlayContent == OverlayContent.Loading) dismiss()
+    }
+
+    private fun present(context: Context, content: OverlayContent): Boolean {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Log.w(TAG, "悬浮窗必须在主线程展示")
+            return false
+        }
+        // 银行类 App 可能误报 AppOps；addView 失败才代表真的没有权限。
+        if (!canShow(context)) {
+            Log.i(TAG, "canDrawOverlays=false，仍尝试添加悬浮窗（可能是 ROM 误报）")
+        }
         val app = context.applicationContext
-        val windowManager = app.getSystemService(WindowManager::class.java) ?: return false
-        // owner / view 跨次复用：dismiss 只摘窗口不销毁实例，重复识屏时省一次冷启动
+        val host = PaymentNotifyAccessibilityService.overlayHost()
+        val windowType = if (host != null) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        }
+        val viewContext = host ?: app
+        if (lastWindowType != windowType || viewHost !== viewContext) {
+            dismiss()
+            view = null
+            owner = null
+            viewHost = null
+            lastWindowType = windowType
+        }
+        val windowManager = viewContext.getSystemService(WindowManager::class.java) ?: return false
         val overlayOwner = owner ?: OverlayOwner().also { owner = it }
-        val composeView = view ?: ComposeView(app).also { created ->
+        val composeView = view ?: ComposeView(viewContext).also { created ->
             created.setViewTreeLifecycleOwner(overlayOwner)
             created.setViewTreeViewModelStoreOwner(overlayOwner)
             created.setViewTreeSavedStateRegistryOwner(overlayOwner)
             view = created
+            viewHost = viewContext
         }
+
+        if (content != OverlayContent.Loading) mainHandler.removeCallbacks(loadingTimeout)
+        overlayContent = content
+        // 已挂载时只换 Compose 状态，窗口不摘不重建，加载卡才能连续展开成结果卡。
+        if (attached) return true
+
         composeView.setContent {
             IjiTheme {
-                OverlayCard(
-                    drafts = drafts,
-                    ledgerId = ledgerId,
-                    detailed = detailed,
-                    onDismiss = { dismiss() },
-                )
+                OverlayContentHost(content = overlayContent, onDismiss = { dismiss() })
             }
         }
         val horizontalMargin = 12.dp.px(app)
         val p = WindowManager.LayoutParams(
-            // 宽度 = 屏宽 − 左右各 12dp；卡片内部按这个宽度等比换算设计稿（927px 基准）
             app.resources.displayMetrics.widthPixels - horizontalMargin * 2,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            // 不抢焦点（不挡输入法、不影响下方应用），但仍然收得到点击
+            windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            // 固定贴屏幕顶端：比起初再往上 8dp（`statusBarHeight - 8dp`），
-            // 卡片顶边的圆角刚好压住状态栏下沿一点点，视觉上更"贴顶"
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             y = (statusBarHeightPx(app) - 8.dp.px(app)).coerceAtLeast(0)
         }
@@ -150,17 +220,26 @@ object BillOverlay {
 
         return runCatching {
             windowManager.addView(composeView, p)
+            attached = true
             true
         }.onFailure {
-            // 权限被收回、MIUI 额外开关没开时就是这里失败：调用方会退回通知，
-            // 但日志必须留下原因，否则线上只能看到「没弹窗」而查不出为什么
             Log.w(TAG, "悬浮窗添加失败，退回通知", it)
+            attached = false
+            overlayContent = null
             view = null
             owner = null
+            viewHost = null
         }.getOrDefault(false)
     }
 
     fun dismiss() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { dismiss() }
+            return
+        }
+        mainHandler.removeCallbacks(loadingTimeout)
+        attached = false
+        overlayContent = null
         val current = view ?: return
         val wm = current.context.getSystemService(WindowManager::class.java)
         runCatching { wm?.removeView(current) }
@@ -213,6 +292,51 @@ object BillOverlay {
     }
 }
 
+private sealed interface OverlayContent {
+    data object Loading : OverlayContent
+
+    data class Bill(
+        val drafts: List<BillDraft>,
+        val ledgerId: String,
+        val detailed: Boolean,
+        val onSaved: (() -> Unit)?,
+    ) : OverlayContent
+}
+
+@Composable
+private fun OverlayContentHost(content: OverlayContent?, onDismiss: () -> Unit) {
+    OverlayShell(onDismissed = onDismiss) { close ->
+        AnimatedContent(
+            targetState = content,
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter,
+            transitionSpec = {
+                // 内容切换稍慢，尺寸快速展开；单外壳避免阴影、圆角和底部内容重复叠绘。
+                fadeIn(animationSpec = tween(durationMillis = 360)) togetherWith
+                    fadeOut(animationSpec = tween(durationMillis = 180)) using SizeTransform(
+                        clip = true,
+                        sizeAnimationSpec = { _, _ ->
+                            tween(durationMillis = 120, easing = FastOutSlowInEasing)
+                        },
+                    )
+            },
+            label = "recognitionOverlay",
+        ) { current ->
+            when (current) {
+                OverlayContent.Loading -> RecognitionLoadingCard()
+                is OverlayContent.Bill -> OverlayCard(
+                    drafts = current.drafts,
+                    ledgerId = current.ledgerId,
+                    detailed = current.detailed,
+                    onClose = close,
+                    onSaved = current.onSaved,
+                )
+                null -> Unit
+            }
+        }
+    }
+}
+
 /** 悬浮窗里没有 Activity，Compose 需要的三个 owner 就地造一个 */
 private class OverlayOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
@@ -245,7 +369,8 @@ private fun OverlayCard(
     drafts: List<BillDraft>,
     ledgerId: String,
     detailed: Boolean,
-    onDismiss: () -> Unit,
+    onClose: () -> Unit,
+    onSaved: (() -> Unit)? = null,
 ) {
     // 当前弹出的所有笔；剔除只影响显示与写库，原列表不动
     var draftsState by remember(drafts) { mutableStateOf(drafts) }
@@ -260,7 +385,7 @@ private fun OverlayCard(
         draftsState = draftsState.mapIndexed { i, old -> if (i == index) draft else old }
     }
 
-    OverlayShell(onDismissed = onDismiss) { close ->
+    Column(Modifier.fillMaxWidth()) {
         OverlayBrandRow(
             badge = when {
                 doneCount != null -> "✓ 已记 $doneCount"
@@ -281,9 +406,13 @@ private fun OverlayCard(
                 initialIndex = detailedIndex,
                 onDraftChange = { index, draft -> changeDraft(index, draft) },
                 onIndexChange = { detailedIndex = it },
-                onDone = { doneCount = it },
+                // 笔数 > 0 才算真的记上了；全部跳过时不能把「最近识别」标成已确认
+                onDone = { count ->
+                    doneCount = count
+                    if (count > 0) onSaved?.invoke()
+                },
                 ledgerId = ledgerId,
-                onClose = close,
+                onClose = onClose,
             )
         } else {
             CompactOverlayBody(
@@ -292,8 +421,11 @@ private fun OverlayCard(
                 skipped = skipped,
                 onSkip = { index -> skipped = skipped + index },
                 onDraftChange = { index, draft -> changeDraft(index, draft) },
-                onDone = { doneCount = it },
-                onClose = close,
+                onDone = { count ->
+                    doneCount = count
+                    if (count > 0) onSaved?.invoke()
+                },
+                onClose = onClose,
             )
         }
     }

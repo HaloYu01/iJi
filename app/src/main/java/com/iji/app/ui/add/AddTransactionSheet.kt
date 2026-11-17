@@ -784,7 +784,6 @@ fun AddTransactionSheet(
                     minuteOfDay = minuteOfDay,
                 )
             )
-            snackbar.show("已保存")
         } else {
             val memory = AddBillMemory(type, selectedCategoryId, finalAccount)
             memory.save(context, ledger)
@@ -881,10 +880,6 @@ fun AddTransactionSheet(
             if (refundSourceId == 0L) {
                 refundSourceId = refundCandidates.firstOrNull { it.account == account }?.id
                     ?: refundCandidates.firstOrNull()?.id ?: 0L
-                if (refundSourceId != 0L) {
-                    // 自动关联是轻量提示：Toast 飘一下即可，不占面板布局
-                    panelToast("已自动关联最近一笔同账户支出，点「退款自」可修改")
-                }
             }
         } else {
             refundSourceId = 0L
@@ -1070,7 +1065,6 @@ fun AddTransactionSheet(
         // 展开状态最后恢复：只有该项目确实是一级分类时才展开，否则保持全收起
         expandedParentId = draft.expandedParentId
             ?.takeIf { id -> categories.any { it.id == id && it.parentId == null } }
-        panelToast("已恢复上次未完成的记账")
     }
     // 输入过程中仍走 800ms 节流：进程被杀时最多丢最后 0.8 秒的输入；
     // 正常退出由 requestDismiss / show=false 边缘的 persistDraftNow() 立即写盘
@@ -1124,7 +1118,6 @@ fun AddTransactionSheet(
         onConfirm = { result ->
             splits = result
             showSplitDialog = false
-            if (result.isEmpty()) panelToast("已取消组合付款")
         },
     )
 
@@ -1227,7 +1220,6 @@ fun AddTransactionSheet(
                 pendingTemplate = template
             } else {
                 applyTemplate(template)
-                panelToast("已应用模板「${template.name.ifBlank { "未命名模板" }}」")
             }
         },
     )
@@ -1240,10 +1232,7 @@ fun AddTransactionSheet(
         summary = "当前已填写的内容会被模板覆盖",
         confirmText = "覆盖",
         onConfirm = {
-            pendingTemplate?.let {
-                applyTemplate(it)
-                panelToast("已应用模板「${it.name.ifBlank { "未命名模板" }}」")
-            }
+            pendingTemplate?.let { applyTemplate(it) }
             pendingTemplate = null
         },
     )
@@ -3635,5 +3624,5 @@ private fun CategoryCell(
 @Preview(showBackground = true, heightDp = 700)
 @Composable
 private fun AddSheetPreview() {
-    IjiTheme { AddTransactionSheet(show = true, onDismiss = {}, viewModel = MainViewModel()) }
+    IjiTheme { AddTransactionSheet(show = true, onDismiss = {}, viewModel = viewModel { MainViewModel() }) }
 }

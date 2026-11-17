@@ -132,7 +132,6 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
             snackbar.show("保存失败，请重试")
             return
         }
-        snackbar.show("规则已保存")
         onBack()
     }
 
@@ -361,8 +360,7 @@ fun LocalRuleEditScreen(ruleId: String, onBack: () -> Unit) {
         onConfirm = {
             showDelete = false
             val ok = existing?.let { LocalRuleStore.remove(context, it.id) } ?: false
-            snackbar.show(if (ok) "已删除" else "删除失败，请重试")
-            if (ok) onBack()
+            if (ok) onBack() else snackbar.show("删除失败，请重试")
         },
     )
 }

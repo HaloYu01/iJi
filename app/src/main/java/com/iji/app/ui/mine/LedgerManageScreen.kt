@@ -262,7 +262,7 @@ fun LedgerManageScreen(
                 return@IjiDialog
             }
             viewModel.renameLedger(target, input) { ok ->
-                if (ok) snackbar.show("已重命名") else snackbar.show("名称为空、重复或与原名相同")
+                if (!ok) snackbar.show("名称为空、重复或与原名相同")
             }
             renaming = null
         },
@@ -286,7 +286,7 @@ fun LedgerManageScreen(
         onConfirm = {
             val target = deleting ?: return@IjiDialog
             viewModel.deleteLedger(target) { ok ->
-                if (ok) snackbar.show("已删除账本「$target」") else snackbar.show("该账本仍有账单，不能删除")
+                if (!ok) snackbar.show("该账本仍有账单，不能删除")
             }
             deleting = null
         },

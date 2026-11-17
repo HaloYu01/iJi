@@ -24,12 +24,10 @@ object CategoryStore {
 
     private const val PREF = "iji_categories"
 
-    /** 旧版：仅自定义分类（保留不删，便于回滚旧版本 APK 时不丢数据） */
     private const val KEY_LEGACY_CUSTOM = "custom_categories"
-
-    /** v2：全量分类目录 */
     private const val KEY_ALL = "categories_v2"
     private const val KEY_SEEDED = "seeded_v2"
+    private const val KEY_SAVED_COLORS = "saved_colors"
 
     @Volatile
     private var version: Int = 0
@@ -103,6 +101,14 @@ object CategoryStore {
     /** 指定层级的末尾序号（新增分类时用） */
     fun nextSortOrder(type: TransactionType, parentId: String?): Int =
         (all.filter { it.type == type && it.parentId == parentId }.maxOfOrNull { it.sortOrder } ?: -1) + 1
+
+    fun savedColors(context: Context): List<Long> =
+        prefs(context).getString(KEY_SAVED_COLORS, "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }
+
+    fun saveColor(context: Context, color: Long) {
+        val next = (savedColors(context).filter { it != color } + color).takeLast(8)
+        prefs(context).edit().putString(KEY_SAVED_COLORS, next.joinToString(",")).apply()
+    }
 
     // ── 写入 ──
 

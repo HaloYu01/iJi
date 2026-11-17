@@ -152,7 +152,7 @@ fun BudgetAlertScreen(
         onConfirm = {
             showClearConfirm = false
             app.clearBudgetAlerts { ok ->
-                snackbar.show(if (ok) "已清空提醒记录" else "清空失败")
+                if (!ok) snackbar.show("清空失败")
             }
         },
     ) {

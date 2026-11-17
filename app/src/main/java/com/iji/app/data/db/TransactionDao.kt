@@ -127,6 +127,18 @@ interface TransactionDao {
     @Query("SELECT COUNT(*) FROM transactions WHERE dateMillis = :epochDay AND ledgerId = :ledgerId")
     suspend fun countOnDate(epochDay: Long, ledgerId: String): Int
 
+    /**
+     * 同一天、同金额、同类型的账单笔数：全自动记账的「疑似重复」判定用。
+     *
+     * 只做提示不做阻断——同一天两笔相同金额的消费是正常现象，
+     * 真正需要拦的是「同一页面反复触发」（由 60s 指纹负责）。
+     */
+    @Query(
+        "SELECT COUNT(*) FROM transactions WHERE amountCents = :amountCents " +
+            "AND type = :type AND dateMillis = :epochDay"
+    )
+    suspend fun countSameAmountOnDay(amountCents: Long, type: String, epochDay: Long): Int
+
     /** 指定周期内的支出合计（用于同比环比） */
     @Query(
         """
@@ -177,6 +189,18 @@ interface TransactionDao {
      */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(entities: List<TransactionEntity>)
+
+    /**
+     * 同一商户（或备注）最近一次使用的分类：全自动分类的「历史优先」数据源。
+     *
+     * 早期数据 merchant 为空、商户名写在 note 里，所以两列都匹配；
+     * 取最近一笔，与用户上一次的分类选择保持一致。
+     */
+    @Query(
+        "SELECT categoryId FROM transactions WHERE (merchant = :key OR note = :key) " +
+            "AND type = :type ORDER BY dateMillis DESC, id DESC LIMIT 1"
+    )
+    suspend fun latestCategoryByKey(key: String, type: String): String?
 }
 
 /** 商家（收款方）支出聚合结果 */

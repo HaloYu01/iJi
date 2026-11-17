@@ -15,19 +15,19 @@ import top.yukonga.miuix.kmp.basic.SnackbarResult
 /**
  * 轻量提示的统一入口（全 App 通用）。
  *
- * **当前口径（全局统一 Toast）**：纯文本提示一律走系统 **Toast**——样式统一、
- * 不占页面布局、浮层（悬浮面板 / 抽屉）打开时也能看到；`duration` 映射为
+ * **口径：非必要不提示**。纯文本提示只用于失败、校验不通过、权限或前置条件缺失、
+ * 操作指引等用户必须知道的场景；保存成功、状态变化、自动完成等有明显界面反馈的结果
+ * 不要调用。纯文本走系统 **Toast**（浮层打开时也能看到），`duration` 映射为
  * Toast 时长（Short ≈ 2s，Long ≈ 3.5s）。
  *
- * **唯一的例外是带动作按钮的提示**（如「已记一笔 · 撤销」）：Toast 放不了按钮，
- * 这类调用保留 Miuix Snackbar（Host 由 `AppRoot` 渲染）。
+ * **带动作按钮的提示**（如「已记一笔 · 撤销」）走 Miuix Snackbar（Host 由 `AppRoot` 渲染），
+ * 它是操作入口，不受上述口径限制。
  *
  * **基础用法**
  * ```
  * val snackbar = LocalSnackbarController.current
- * snackbar.show("已保存")                       // Toast
- * snackbar.show("已记一笔", "撤销") { undo() }   // Snackbar（带动作按钮）
- * snackbar.show("导入完成", duration = SnackbarDuration.Long)  // Toast，更长停留
+ * snackbar.show("保存失败，请重试")
+ * snackbar.show("已记一笔", "撤销") { undo() }
  * ```
  *
  * **接入方式**：由宿主（当前是 `AppRoot`）创建 `SnackbarHostState`，

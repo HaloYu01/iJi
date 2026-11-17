@@ -1,9 +1,6 @@
 package com.iji.app.ui
 
 import android.app.Activity
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -86,7 +83,6 @@ import com.kyant.capsule.ContinuousRoundedRectangle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import kotlin.math.absoluteValue
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 
@@ -197,6 +193,12 @@ private val OnboardingDraftSaver = listSaver<OnboardingDraft, Any>(
 @Composable
 fun OnboardingWizardScreen(
     reconfigure: Boolean,
+    /** 「调整头像」子页裁剪完成的一次性回传；非 null 即写进草稿并立即消费 */
+    avatarResult: String?,
+    /** 草稿已应用回传结果后清空一次性结果，防止下次重组重复应用 */
+    onAvatarResultConsumed: () -> Unit,
+    /** 相册选图回调：宿主导航进「调整头像」子页缩放裁剪，引导页自己不落盘原图 */
+    onPickAvatarImage: (Uri) -> Unit,
     onFinish: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -209,6 +211,17 @@ fun OnboardingWizardScreen(
     var step by rememberSaveable { mutableIntStateOf(0) }
     var draft by rememberSaveable(stateSaver = OnboardingDraftSaver) {
         mutableStateOf(OnboardingDraft.current(context))
+    }
+
+    // 「调整头像」子页裁剪完成回传的结果写进草稿后立即消费（一次性结果）。
+    // 结果经 savedStateHandle 传递：向导被 AVATAR_EDIT 盖住期间不在组合里，
+    // 回来重组后才收到，所以只能在这里收，不能在导航回调里直接写。
+    LaunchedEffect(avatarResult) {
+        val uri = avatarResult
+        if (!uri.isNullOrBlank()) {
+            draft = draft.copy(avatarUri = uri)
+            onAvatarResultConsumed()
+        }
     }
     var submitting by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
@@ -237,18 +250,13 @@ fun OnboardingWizardScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 头像与「我的」页同一条链路：Photo Picker 先拿到原图 → 宿主导航进「调整头像」
+    // 子页缩放 / 拖动 / 确定 → 裁好的 512 圆形图作为一次性结果带回草稿。
     val avatarLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            val saved = withContext(Dispatchers.IO) { persistAvatar(context, uri) }
-            if (saved != null) {
-                draft = draft.copy(avatarUri = saved)
-            } else {
-                snackbar.show("头像读取失败，请重试")
-            }
-        }
+        onPickAvatarImage(uri)
     }
 
     val notificationReady = permissionItems
@@ -284,7 +292,6 @@ fun OnboardingWizardScreen(
                     SettingsRepository.ONBOARDING_DONE,
                 )
             }
-            snackbar.show(if (reconfigure) "配置已更新" else "配置完成")
             onFinish()
         }
     }
@@ -687,20 +694,3 @@ private fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifie
         )
     }
 }
-
-/**
- * 选到的头像立刻写进私有目录（与 AvatarEditScreen.saveAvatar 同样的 file:// 口径），
- * 草稿里因此始终是可长期读取的路径，而不是会失效的 content:// 临时授权。
- * 若用户中途放弃，会留下一张孤儿图；下次在「我的」页换头像时会被统一清理。
- */
-private fun persistAvatar(context: Context, uri: Uri): String? = runCatching {
-    val dir = File(context.filesDir, "avatar").apply { mkdirs() }
-    val file = File(dir, "avatar_${System.currentTimeMillis()}.png")
-    val bmp = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-        ?: return@runCatching null
-    if (!file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }) {
-        file.delete()
-        return@runCatching null
-    }
-    Uri.fromFile(file).toString()
-}.getOrNull()

@@ -149,7 +149,6 @@ fun TemplateEditScreen(templateId: String, onBack: () -> Unit) {
                 d.copy(splits = validSplits.takeIf { it.size >= 2 }.orEmpty()),
             )
         }
-        snackbar.show(if (editId == null) "已创建模板" else "已保存修改")
         onBack()
     }
 
@@ -288,7 +287,6 @@ fun TemplateEditScreen(templateId: String, onBack: () -> Unit) {
             showDelete = false
             val id = editId ?: return@IjiDialog
             scope.launch { TemplateRepository.remove(context, id) }
-            snackbar.show("已删除模板")
             onBack()
         },
     )

@@ -47,7 +47,6 @@ import com.iji.app.ui.components.CategoryIconImage
 import com.iji.app.ui.components.ContentState
 import com.iji.app.ui.components.IjiSegmentedRow
 import com.iji.app.ui.components.IjiTextAction
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.StateView
 import com.iji.app.ui.components.SubPageTopBar
 import com.iji.app.ui.components.formatMoney
@@ -87,7 +86,6 @@ fun BorrowLendScreen(
     val unsettledCents = remember(orders) {
         orders.filter { it.borrowOrderStatus != BorrowOrderStatus.SETTLED }.sumOf { it.amountCents }
     }
-    val snackbar = LocalSnackbarController.current
 
     val listState = rememberLazyListState()
     // 切换方向后回到顶部，否则会停留在上一个列表的滚动位置。
@@ -170,7 +168,6 @@ fun BorrowLendScreen(
                             onClick = { onOpenOrder(tx.id) },
                             onAction = { action ->
                                 app.setReimburseState(tx, action.targetState)
-                                snackbar.show(action.doneMessage(direction))
                             },
                         )
                     }

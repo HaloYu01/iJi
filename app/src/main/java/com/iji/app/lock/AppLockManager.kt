@@ -180,7 +180,7 @@ object AppLockManager {
         title: String = "指纹解锁",
         subtitle: String = "请验证指纹以进入 i记",
         onSuccess: () -> Unit,
-        onError: (String) -> Unit,
+        onError: (String) -> Unit = {},
     ) {
         val executor = ContextCompat.getMainExecutor(activity)
         val callback = object : BiometricPrompt.AuthenticationCallback() {
@@ -201,7 +201,6 @@ object AppLockManager {
                 .build()
             prompt.authenticate(CancellationSignal(), executor, callback)
         } catch (e: Throwable) {
-            // 设备无指纹硬件/未录入/权限缺失等：只提示，不崩溃
             onError(e.message ?: "指纹认证不可用")
         }
     }

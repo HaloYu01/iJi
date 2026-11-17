@@ -17,7 +17,7 @@ import kotlinx.coroutines.withContext
  *
  * 为什么用广播而不是拉起 Activity：协议 3 的岛按钮按 Maling-Island 真机验证的结构
  * 挂广播 PendingIntent（`miui.focus.action_complete`），后台起 Activity 在部分
- * ROM 上还会被拦；记账本身不需要界面，toast 就是足够的反馈。
+ * ROM 上还会被拦；记账本身不需要界面，只在失败时给一条轻量提示。
  *
  * 数据来源与语义：草稿只放内存（[ScreenCaptureFlow]，进程活着就能读到），这与其余
  * 入口一致——识别草稿必须经用户确认才入账，进程被杀就当作没截过。这里「确认」
@@ -54,10 +54,7 @@ class BillConfirmReceiver : BroadcastReceiver() {
         val ok = QuickBillWriter.addDrafts(drafts, ledgerId)
         // 写完立即清空：回应用打开导入页时不能再把这些笔当「待核对」重复导入
         ScreenCaptureFlow.consume()
-        toast(
-            context,
-            if (ok > 0) "已记 $ok 笔到「$ledgerId」，可在应用内核对" else "记账失败，请进应用重试",
-        )
+        if (ok <= 0) toast(context, "记账失败，请进应用重试")
     }
 
     private suspend fun toast(context: Context, message: String) {

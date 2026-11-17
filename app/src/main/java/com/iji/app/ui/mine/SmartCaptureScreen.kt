@@ -207,7 +207,6 @@ fun SmartCaptureScreen(
             tags = bill.tags,
             ledgerId = ledger,
         )
-        snackbar.show("已记账 ${formatMoney(bill.amountCents)} · $ledger")
         resetAll()
     }
 
@@ -464,7 +463,7 @@ fun SmartCaptureScreen(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Spacer(Modifier.height(2.dp))
-                                val time = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                                val time = SimpleDateFormat("MM-dd HH:mm", LocalConfiguration.current.locales[0])
                                     .format(Date(record.time))
                                 Text(
                                     listOf(time, record.bill.source, record.bill.categoryHint)

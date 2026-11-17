@@ -1,24 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    支付通知自动记账所需的无障碍配置。
+    自动记账所需的两个能力，权限范围仍然刻意收窄：
 
-    权限范围刻意收窄：
-    - 只监听「通知内容变化」和「窗口切换」两类事件
-    - 窗口切换事件**只取 event.packageName 记住前台是哪个 App**（用于识屏判断账单来源），
-      不遍历控件树、不读取界面文字/结构；**不**要求读取窗口内容（canRetrieveWindowContent=false），
-      不要求手势操作、不模拟点击
-    - 只额外声明 canTakeScreenshot：由**用户主动点击**「截取屏幕」时取一帧当前画面做账单识别
+    1. 「支付通知自动记账」：只监听通知内容变化，读支付通知的文字。
+    2. 「全自动记账」：监听窗口切换与窗口内容变化，并用 canRetrieveWindowContent
+       读取当前界面的**文本**，用来在微信 / 支付宝等账单页里认出金额与商户。
 
-    canTakeScreenshot 的用途与边界：
-    - 只用于「截屏记账」：用户在本 App 里点按钮 → 倒计时 3 秒 → 系统截一帧 → 本地 OCR 识别账单列表页；
-    - 不会后台自动截屏、不会持续监听屏幕内容、图像不出设备（OCR 全部在本机完成）。
+    canRetrieveWindowContent=true 的边界：
+    - 只在命中监听清单的支付类 App 且当前页符合账单页特征时才读节点树；
+    - 只读文本（text / contentDescription），不点击、不输入、不遍历无关应用；
+    - 识别结果一律先弹确认，用户点「记录」才写入数据库。
+
+    canTakeScreenshot 只服务「半自动识屏」：用户主动点按钮 / 磁贴 / 音量键时
+    取一帧当前画面做 OCR，不会后台自动截屏，图片不出设备。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_payment_desc"
-    android:accessibilityEventTypes="typeNotificationStateChanged|typeWindowStateChanged"
+    android:accessibilityEventTypes="typeNotificationStateChanged|typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="200"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
-    android:accessibilityFlags="flagDefault"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestEnhancedWebAccessibility"
     android:summary="@string/accessibility_payment_label" />

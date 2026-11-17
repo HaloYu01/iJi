@@ -235,7 +235,6 @@ fun AddAccountScreen(
                         category = resolvedCategory.name,
                     ),
                 )
-                snackbar.show("已保存")
                 submitting = false
                 onBack()
             } else {
@@ -251,7 +250,6 @@ fun AddAccountScreen(
                 if (newId == null) {
                     snackbar.show("已存在同名账户")
                 } else {
-                    snackbar.show("已创建账户")
                     // 把新账户 id 交出去：资产页据此滚到它并高亮
                     onCreated(newId)
                 }

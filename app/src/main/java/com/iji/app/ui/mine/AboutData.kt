@@ -29,14 +29,28 @@ data class ChangelogEntry(
 /** 更新日志：由新到旧。第一条必须对应当前 versionName（见 [changelogOf]）。 */
 val changelogData: List<ChangelogEntry> = listOf(
     ChangelogEntry(
-        version = "v1.0.0",
-        date = "2026-11-12",
+        version = "v1.0.1",
+        date = "2026-11-13",
         items = listOf(
-            "首个正式版",
+            "兼容Android 11，无实况通知发送普通通知",
+            "修复引导配置页面bug",
+            "预算默认不配置，概览卡显示「未配置预算」",
+            "删除非必要的toast提示",
+            "修复下拉菜单不能连续点击的问题",
+            "新增添加分类颜色设置",
+            "资产账户详情页的账单可以点开查看详情并编辑",
+            "加入全自动记账，并重构自动记账ui",
+            "优化无障碍功能开启和保活策略",
         ),
     ),
     ChangelogEntry(
-        // Beta 阶段 16 个版本合并归档为一条开发记录：版本、日期都记区间，只留重要节点
+        version = "v1.0.0",
+        date = "2026-11-12",
+        items = listOf(
+            "经几个月的开发，首个正式版上线了，功能后续完善中",
+        ),
+    ),
+    ChangelogEntry(
         version = "v0.0.1 Beta → v0.9.8 Beta",
         date = "2026-07-16 ~ 2026-11-03",
         items = listOf(
@@ -60,7 +74,7 @@ data class VersionInfo(
     val display: String
         get() = "v$versionName（构建 $versionCode）"
 
-    /** `v1.0.0 · 2026-11-12`；未登记日期时只显示版本号 */
+    /** `v1.0.0 · 2026-11-12` */
     val displayWithDate: String
         get() = releaseDate?.let { "v$versionName · $it" } ?: "v$versionName"
 }

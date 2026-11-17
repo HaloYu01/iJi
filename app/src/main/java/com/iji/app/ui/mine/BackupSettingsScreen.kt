@@ -202,7 +202,7 @@ fun BackupSettingsScreen(
                 }.isSuccess
             }
             busy = false
-            snackbar.show(if (ok) "已导出（$mime）" else "导出失败：无法写入文件")
+            if (!ok) snackbar.show("导出失败：无法写入文件")
         }
     }
 
@@ -230,10 +230,11 @@ fun BackupSettingsScreen(
                 val ok = withContext(Dispatchers.IO) {
                     runCatching { saveToDownloads(context, name, mime, text) }.getOrNull() != null
                 }
-                snackbar.show(if (ok) "已保存到 下载/$name" else "保存失败：请检查存储空间")
                 if (ok) {
                     showExportPanel = false
                     refresh()
+                } else {
+                    snackbar.show("保存失败：请检查存储空间")
                 }
             } else {
                 pendingFileExport = mime to text

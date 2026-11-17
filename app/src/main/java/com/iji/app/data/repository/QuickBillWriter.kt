@@ -40,8 +40,12 @@ object QuickBillWriter {
                         amountCents = draft.amountCents,
                         note = draft.note.trim(),
                         account = draft.account,
+                        // 商户单列：同商户历史分类复用、商家统计都要用，不能只塞进 note
+                        merchant = draft.merchant,
                         date = draft.date,
                         ledgerId = ledgerId,
+                        // 全自动会把立减/抵扣归集到 discountCents（半自动默认 0）
+                        discountCents = draft.discountCents,
                     ),
                 )
             }.onSuccess { written++ }

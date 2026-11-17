@@ -919,9 +919,7 @@ fun HomeScreen(
                     val rows = selectedTxs.sortedBy { it.date }
                     val name = "iji_bills_${DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss").format(LocalDateTime.now())}.csv"
                     val uri = saveToDownloads(context, name, "text/csv", viewModel.toCsv(rows))
-                    snackbar.show(
-                        if (uri != null) "已导出 ${rows.size} 笔到 Download/$name" else "导出失败",
-                    )
+                    if (uri == null) snackbar.show("导出失败")
                 },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -946,14 +944,17 @@ fun HomeScreen(
             bulkDeleteConfirm = false
             viewModel.deleteBillsByIds(selectedIds.toList()) { outcome ->
                 exitMultiSelect()
-                snackbar.show(
-                    when (outcome) {
-                        is DeleteBillsOutcome.Success -> "已删除 ${outcome.count} 笔账单，余额与统计已同步"
-                        DeleteBillsOutcome.NoMatch -> "没有找到可删除的账单"
-                        is DeleteBillsOutcome.Failure -> outcome.message
-                    },
-                    duration = top.yukonga.miuix.kmp.basic.SnackbarDuration.Long,
-                )
+                when (outcome) {
+                    is DeleteBillsOutcome.Success -> Unit
+                    DeleteBillsOutcome.NoMatch -> snackbar.show(
+                        "没有找到可删除的账单",
+                        duration = top.yukonga.miuix.kmp.basic.SnackbarDuration.Long,
+                    )
+                    is DeleteBillsOutcome.Failure -> snackbar.show(
+                        outcome.message,
+                        duration = top.yukonga.miuix.kmp.basic.SnackbarDuration.Long,
+                    )
+                }
             }
         },
     ) {
@@ -975,7 +976,7 @@ fun HomeScreen(
             bulkCategoryDialog = false
             viewModel.updateBillsCategory(selectedIds.toList(), categoryId) { updated ->
                 exitMultiSelect()
-                snackbar.show(if (updated >= 0) "已更新 $updated 笔账单的分类" else "批量改分类失败")
+                if (updated < 0) snackbar.show("批量改分类失败")
             }
         },
     )
@@ -1477,15 +1478,6 @@ private fun ReimburseChip(
     }
 }
 
-/**
- * 本月概览大卡：**实色状态卡**——卡底即预算状态（正常=主色蓝 / 已超支=红），内容全白。
- *
- * 此前「白卡 + 状态色微染」试过平涂与渐变两版，都发闷：染色上红（支出）蓝（剩余）
- * 两个大数字互相打架，进度条轨道也发灰。实色卡是记账类概览的常规做法：
- * 状态一眼可辨，也彻底解决「与近白页面底色融为一体」。
- * 纯信息卡不带操作入口——预算的增改统一在「预算」页（那里有完整的编辑弹窗）。
- * 卡片只回答四个问题：本月收支（支出/收入并排）、还能花多少、每天可用多少、今天还能花多少。
- */
 @Composable
 private fun SummaryCard4(
     expenseCents: Long,
@@ -1493,15 +1485,13 @@ private fun SummaryCard4(
     incomeCents: Long = 0L,
     budgetCents: Long,
     budgetExpenseCents: Long = expenseCents,
-    /** 真实的预算进度（与预算页同一份数据）；为空时回退旧的内存算法 */
+    /** 真实的预算进度（与预算页同一份数据） */
     budgetProgress: BudgetProgress? = null,
-    /** 日均预算（分）= 剩余预算 ÷ 剩余天数（含今天）；0 表示未设置预算或已超支 */
+    /** 日均预算（分）= 剩余预算 ÷ 剩余天数（含今天）；0 表示不显示底行 */
     dailyBudgetCents: Long = 0L,
     /** 今日剩余可花（分）= 日均预算 − 今日支出；可为负（今日已超） */
     todayRemainingCents: Long? = null,
 ) {
-    // 预算相关数值一律由 BudgetProgress 驱动，保证与预算页一致；
-    // 只有「尚未持久化预算」的过渡场景才回退到旧的内存算法。
     val bp = budgetProgress
     val remainingBudget = when {
         bp != null -> bp.remainingCents
@@ -1513,13 +1503,9 @@ private fun SummaryCard4(
     val overBudget = bp?.let { it.percent >= 100 }
         ?: (budgetCents > 0L && budgetExpenseCents > budgetCents)
 
-    // 卡底=状态色：正常/未设置=主色蓝，已超支=红。「接近超支」不改卡底（琥珀上白字
-    // 对比度不够），由进度条填充与「已用」文字变琥珀表达。
     val cardColor = if (overBudget) AppleRed else MiuixPrimary
-    // 卡上内容统一白色系（标签 72% / 正文 100%），单一色调讲完整个卡片
     val onCardLabel = Color.White.copy(alpha = 0.72f)
     val onCardValue = Color.White
-    // 进度条填充：接近超支时变琥珀（蓝色卡上可辨），其余白色；轨道恒白 25%
     val progressFill = if (bp?.level == BudgetAlertLevel.NEAR_LIMIT && !overBudget) {
         NearLimitColor
     } else {
@@ -1533,11 +1519,9 @@ private fun SummaryCard4(
         cornerRadius = Radius.sheet,
         colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(cardColor),
     ) {
-        // 两个金额并排，字号比原先单个英雄数字小一档；系统字号放大后再降一档
         val amountSize = if (LocalDensity.current.fontScale > 1.3f) 14.sp else 18.sp
 
         Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-            // 主行：本月收支（支出/收入）+ 预算剩余 —— 账本页要回答的是「进出多少、还能花多少」
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -1556,22 +1540,18 @@ private fun SummaryCard4(
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
+                    val remaining = remainingBudget
                     Text(
-                        // 超支时换标签：状态不只靠颜色传达
-                        if (remainingBudget != null && remainingBudget < 0L) "已超支" else "预算剩余",
+                        remaining?.let { if (it < 0L) "已超支" else "预算剩余" } ?: "本月预算",
                         style = MaterialTheme.typography.bodySmall,
                         color = onCardLabel,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        if (remainingBudget != null) {
-                            formatMoney(kotlin.math.abs(remainingBudget))
-                        } else {
-                            "未设置"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
+                        if (remaining == null) "未配置预算" else formatMoney(kotlin.math.abs(remaining)),
+                        style = if (remaining == null) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (remainingBudget == null) Color.White.copy(alpha = 0.6f) else onCardValue,
+                        color = if (remaining == null) Color.White.copy(alpha = 0.6f) else onCardValue,
                         maxLines = 1,
                     )
                 }
@@ -1579,7 +1559,6 @@ private fun SummaryCard4(
             Spacer(Modifier.height(20.dp))
             when {
                 bp != null && bp.amountCents > 0L -> {
-                    // 百分比贴进度条右侧：条按剩余宽度缩短，省掉原来单独占的一行
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BudgetProgressBar(
                             progress = bp,
@@ -1616,17 +1595,15 @@ private fun SummaryCard4(
                     )
                 }
             }
-            // 发丝线分隔：上方是「月度预算」区，下方是「日均 / 今日」区
-            Spacer(Modifier.height(14.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(0.5.dp)
-                    .background(Color.White.copy(alpha = 0.25f)),
-            )
-            Spacer(Modifier.height(12.dp))
-            // 底行：日均预算 / 今日剩余 —— 「每天可用多少、今天还能花多少」
             if (dailyBudgetCents > 0L) {
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(0.5.dp)
+                        .background(Color.White.copy(alpha = 0.25f)),
+                )
+                Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -1643,12 +1620,10 @@ private fun SummaryCard4(
                             maxLines = 1,
                         )
                     }
-                    // 今日剩余只在浏览当前月时由调用方传入；缺省时只显示日均预算一列
                     val todayLeft = todayRemainingCents
                     if (todayLeft != null) {
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                // 超了换标签：状态不只靠颜色传达
                                 if (todayLeft < 0L) "今日已超" else "今日剩余",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onCardLabel,
@@ -1664,8 +1639,6 @@ private fun SummaryCard4(
                         }
                     }
                 }
-            } else {
-                Spacer(Modifier.height(2.dp))
             }
         }
     }

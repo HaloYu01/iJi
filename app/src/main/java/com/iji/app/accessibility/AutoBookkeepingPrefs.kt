@@ -74,4 +74,28 @@ object AutoBookkeepingPrefs {
             .ifBlank { merchant }
 
     fun dedupWindowMs(seconds: Int): Long = seconds.coerceIn(10, 600) * 1000L
+
+    // ── 重复识别策略（全自动）────────────────────────────────────────────
+    // 三档与钱迹一致：拦掉 / 照常确认但标注 / 不检测。
+    // 默认「标注」：宁可让用户多点一下，也不误杀同一天两笔同额消费。
+
+    const val KEY_DUP_POLICY = "auto_bill_dup_policy"
+    const val DUP_CONFIRM = "confirm"
+    const val DUP_BLOCK = "block"
+    const val DUP_OFF = "off"
+
+    val DUP_POLICY_VALUES = listOf(DUP_CONFIRM, DUP_BLOCK, DUP_OFF)
+
+    fun dupPolicy(context: Context): String =
+        SettingsRepository.getString(context, KEY_DUP_POLICY, DUP_CONFIRM)
+
+    fun setDupPolicy(context: Context, policy: String) {
+        SettingsRepository.setString(context, KEY_DUP_POLICY, policy)
+    }
+
+    fun dupPolicyLabel(policy: String): String = when (policy) {
+        DUP_BLOCK -> "直接拦掉"
+        DUP_OFF -> "不检测"
+        else -> "确认时标注"
+    }
 }

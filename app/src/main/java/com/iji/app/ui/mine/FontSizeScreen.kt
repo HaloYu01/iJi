@@ -33,7 +33,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.iji.app.ui.FontScaleState
-import com.iji.app.ui.components.LocalSnackbarController
 import com.iji.app.ui.components.ijiTopBarContentPadding
 import com.iji.app.ui.theme.AppleRed
 import com.iji.app.ui.theme.LocalDimens
@@ -62,7 +61,6 @@ fun FontSizeScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val snackbar = LocalSnackbarController.current
     // 以全局状态为准（同一份主题消费的值），避免"这页显示的和实际生效的不是一个数"
     var fontSize by remember { mutableStateOf(FontScaleState.fontSizeSp) }
 
@@ -174,7 +172,6 @@ fun FontSizeScreen(
                         .clickable {
                             // 拖动/点档位时已写入，这里再写一次是保险（键盘/无障碍调整等场景）
                             FontScaleState.setFontSize(context, fontSize)
-                            snackbar.show("字体大小已保存")
                             onBack()
                         }
                         .padding(vertical = 16.dp),

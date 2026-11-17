@@ -1,6 +1,7 @@
 package com.iji.app.accessibility
 
 import android.content.Context
+import com.iji.app.capture.ForegroundAppResolver
 import com.iji.app.data.repository.SettingsRepository
 
 /**
@@ -37,6 +38,47 @@ object CapturePreferences {
     const val KEY_OVERLAY_CONFIRM = "screen_capture_overlay_confirm"
     /** 识屏倒计时（秒）：给用户留出切到账单页的时间 */
     const val KEY_CAPTURE_DELAY = "screen_capture_delay_seconds"
+
+    /** 截屏识屏的工作流：半自动（默认，用户主动触发） / 全自动（切到支付 App 自动识别） */
+    const val WORKFLOW_SEMI = "semi"
+    const val WORKFLOW_AUTO = "auto"
+    const val KEY_WORKFLOW = "capture_workflow"
+    /**
+     * 旧的全自动监听清单键，**只用于一次性迁移**。
+     *
+     * 新的读写入口是 `AutoListenPrefs`（键 `auto_listen_packages`），放在 `autorecord` 包：
+     * 全自动的平台选择、延迟、去重策略都归它自己，半自动改设置不会波及全自动。
+     */
+    const val KEY_TRIGGER_APPS = "auto_capture_trigger_apps"
+
+    /** 无障碍最近一次真的连上系统的时间（毫秒，0 = 从没连上过） */
+    private const val KEY_A11Y_CONNECTED_AT = "a11y_last_connected_at"
+
+    fun workflow(context: Context): String =
+        SettingsRepository.getString(context, KEY_WORKFLOW, WORKFLOW_SEMI)
+
+    fun setWorkflow(context: Context, value: String) {
+        SettingsRepository.setString(context, KEY_WORKFLOW, value)
+    }
+
+    /**
+     * 记下「无障碍确实连上过」。
+     *
+     * 用来区分两种「现在没连上」：从没开过（引导去开）vs 开过但被系统清理
+     * （明确告诉用户发生了什么，并给一键恢复）。没有这个时间戳，页面只能猜。
+     */
+    fun markA11yConnected(context: Context) {
+        SettingsRepository.setString(
+            context,
+            KEY_A11Y_CONNECTED_AT,
+            System.currentTimeMillis().toString(),
+        )
+    }
+
+    fun lastA11yConnectedAt(context: Context): Long =
+        SettingsRepository.getString(context, KEY_A11Y_CONNECTED_AT, "0").toLongOrNull() ?: 0L
+
+    // 执行记录已迁到 AutoRecordStore（全自动独立链路，不再经过截屏通道）
 
     val DELAY_OPTIONS_SECONDS = listOf(3, 5)
 
